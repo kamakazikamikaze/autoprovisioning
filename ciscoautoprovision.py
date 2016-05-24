@@ -10,6 +10,10 @@ from pprint import pprint
 import sys
 import json
 import os
+import imp
+cup = imp.load_source('ciscoupgrade', '/srv/samba/Share/scripts/dev/Seth/autoprovisioning/ciscoupgrade.py')
+
+
 try:    # Python 3 compatibility
     input = raw_input
 except NameError:
@@ -45,6 +49,17 @@ def generate_config(filename='autoProv.confg'):
 class Ciscoautoprovision:
 	def __init__(self,configfile=None,username=None,password=None):
 		#requests.packages.urllib3.disable_warnings()
+		self.switches = []
+		self.upgrades = []
+		self.debug = 0
+		self.firmwares = {}
+		self.community = ''
+		self.suser = ''
+		self.spasswd = ''
+		self.senable = ''
+		self.tftp = ''
+		self.telnettimeout = 60
+		self.pver3 = (sys.version_info > (3, 0))
 		if configfile:
 			self.parseconfig(configfile)
 		if username is None:
@@ -176,38 +191,58 @@ class Ciscoautoprovision:
 				    del physical[0]
 				model = str(physical[0].value.split('-')[1])
 				
-				print(model,softimage)
+				print(host['IPaddress'],model,softimage)
 				if model not in self.firmwares.keys():
 					raise Exception('model' + model + 'not found in firmware list!')
 					#TODO: make a way to add firmware
 				if softimage in self.rm_nonalnum(self.firmwares[model]):
-					print('yay!')
+					pass
 				else:
-					print(self.rm_nonalnum(self.firmwares[model]))
+					host['model'] = model
+					host['bin'] = self.firmwares[model] 
+					self.upgrades.append(host)
 				#if not softimage or not '.bin' in softimage:
 				#	print('its none')
 				#	softimage = self.telnet_switchmodel(host)
 			except Exception as e:
 				print(e)
+		print(self.upgrades)
 
-	def upgradeswitch(self,switchname,community):
-		try:
-			#modeloid = 'ENTITY-MIB::entPhysicalDescr'
+	def upgradeswitch(self):
+		for host in self.upgrades:
+			try:
 			
-			imageoid  = '1.3.6.1.2.1.16.19.6.0'
-			
-
-			activeimage = snmp_get(imageoid,hostname=switchname,community=community,version=2).value
-			activeimage.split('/')[-1]
-		except Exception as e:
-			print(e)
+				if host['model'].startswith('C38'):
+					up = cup.c38XXUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
+						username=self.suser,password=self.spasswd,
+						binary_file=host['bin'],
+						enable_password=self.senable, debug=self.debug)
+				elif host['model'].startswith('C45'):
+					up = cup.c45xxUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
+						username=self.suser,password=self.spasswd,
+						binary_file=host['bin'],
+						enable_password=self.senable, debug=self.debug)
+				else:
+					up = cup.ciscoupgrade(host=host['IPaddress'],tftpserver=self.tftp,
+						username=self.suser,password=self.spasswd,
+						binary_file=host['bin'],model=host['model'],
+						enable_password=self.senable, debug=self.debug)
+				up.setupTFTP()
+				print(up.log)
+				#activeimage = snmp_get(imageoid,hostname=switchname,community=community,version=2).value
+				#activeimage.split('/')[-1]
+			except Exception as e:
+				print(e)
 
 	def generate_rsa(self):
 
 		for host in self.switches:
 			try:
 				print('connecting to host ' + host['hostname'])
-				s = pexpect.spawnu('telnet ' + host['IPaddress'])
+				if self.pver3:
+					s = pexpect.spawnu('telnet ' + host['IPaddress'])
+				else:
+					s = pexpect.spawn('telnet ' + host['IPaddress'])
 				s.timeout = self.telnettimeout
 				logfilename = host['hostname'] + 'log.txt'
 				s.logfile = open(logfilename, "w")
@@ -231,7 +266,7 @@ class Ciscoautoprovision:
 				s.sendline('?')
 				s.expect(']: ')
 				keysize = s.before.split('.')[0].split()[-1]
-				if not keysize.isnumeric():
+				if not keysize.isdigit():
 					keysize = '2048' # default if didnt split the output correctly
 				s.sendline(keysize)
 				print("generating key of size " + keysize,end='')
@@ -255,33 +290,3 @@ class Ciscoautoprovision:
 					output = f.read()
 				print(output)
 
-
-
-#
-#
-#
-#
-#-A udpIn -p udp -m udp -i eth0 --source 10.11.168.0.1/32 --dport 514 -m state --state NEW -j ACCEPT
-'''
-	def telnet_switchmodel(self,host):
-		try:
-			s = pexpect.spawnu('telnet ' + host['IPaddress'])
-			s.timeout = self.telnettimeout
-			logfilename = host['hostname'] + 'log.txt'
-			s.logfile = open(logfilename, "w")
-			s.expect('Username: ')
-			s.sendline(self.suser)
-			s.expect('Password: ')
-			s.sendline(self.spasswd)
-			s.expect('>')
-			s.sendline('enable')
-			s.expect('Password: ')
-			s.sendline(self.senable)
-			s.expect('#')
-			s.sendline('dir all | include bin')
-			s.expect('#')
-			return s.before.split()
-		except Exception as e:
-			print(e)
-			return
-'''
