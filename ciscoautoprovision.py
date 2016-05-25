@@ -1,7 +1,7 @@
 from __future__ import print_function
 #import pandas as pd
 from easysnmp import snmp_walk, snmp_get
-from socket import gethostbyaddr
+from socket import gethostbyaddr, gethostbyname
 from getpass import getpass, getuser
 from time import sleep
 import pexpect
@@ -11,6 +11,7 @@ import sys
 import json
 import os
 import imp
+import traceback
 cup = imp.load_source('ciscoupgrade', '/srv/samba/Share/scripts/dev/Seth/autoprovisioning/ciscoupgrade.py')
 
 
@@ -48,7 +49,9 @@ def generate_config(filename='autoProv.confg'):
 
 class Ciscoautoprovision:
 	def __init__(self,configfile=None,username=None,password=None):
-		#requests.packages.urllib3.disable_warnings()
+		self.pver3 = (sys.version_info > (3, 0))
+		if not self.pver3:
+			requests.packages.urllib3.disable_warnings()
 		self.switches = []
 		self.upgrades = []
 		self.debug = 0
@@ -59,7 +62,6 @@ class Ciscoautoprovision:
 		self.senable = ''
 		self.tftp = ''
 		self.telnettimeout = 60
-		self.pver3 = (sys.version_info > (3, 0))
 		if configfile:
 			self.parseconfig(configfile)
 		if username is None:
@@ -70,6 +72,13 @@ class Ciscoautoprovision:
 			self.passwd = getpass('sea kibana password: ')
 		else:
 			self.passwd = password
+
+	def ping(self,host):
+		ping_command = "ping -W1 -c 1 " + host + " > /dev/null 2>&1 "
+		response = os.system(ping_command)
+		#Note:response is 1 for fail; 0 for success;
+		return not response
+
 
 	def parseconfig(self,filename):
 		with open('./cfg/' + filename) as f:
@@ -140,7 +149,7 @@ class Ciscoautoprovision:
 					}],
 				}
 			},
-			'size': 3000
+			'size': 300000
 		}
 		#
 		if authenticate:
@@ -163,14 +172,37 @@ class Ciscoautoprovision:
 				if 'null' in result['hostname']:
 					results.append(result)
 		self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
-		self.removeunreachable() # remove unreachable switches from list
+		#self.removeunreachable() # remove unreachable switches from list
 		#list(set(map(lambda x: {x['_source']['host'] : x['_source']['message']},r.json()['hits']['hits'])))
 		#[(x['_source']['host'] , x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
 		#[(x['_source']['logSource'], x['_source']['logSourceIP'], x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
 		pprint(self.switches)
 
 
-		#modelmap
+	def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
+		try:
+			logs = []
+			with open(filename) as f:
+				logs = [line.strip().split() for line in f.readlines() if len(line)]
+			results = []
+			errs = set()
+			for log in logs:
+   				 for x in log:
+					if 'null' in x:
+						host = {}
+						host['hostname'] = x
+						try:
+							host['IPaddress'] = gethostbyname(x)
+							results.append(host)
+						except:
+							if x not in list(errs):
+								errs.add(x)
+								print('cannot resolve hostname: ' + x)
+			self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
+			pprint(self.switches)
+		except Exception as e:
+			traceback.print_exc()
+			print(e)
 
 	def rm_nonalnum(self,string):
 		return ''.join(map(lambda x: x if x.isalnum() else '',string))
@@ -179,8 +211,7 @@ class Ciscoautoprovision:
 	def checkswitchmodels(self):
 		modeloid = 'entPhysicalModelName'
 		imageoid  = u'sysDescr.0' #.1.3.6.1.2.1.16.19.6.0'
-		
-
+		self.upgrades
 		for host in self.switches:
 			try:
 				softimage_raw = snmp_get(imageoid,hostname=host['IPaddress'],community=self.community,version=2).value
@@ -206,12 +237,18 @@ class Ciscoautoprovision:
 				#	softimage = self.telnet_switchmodel(host)
 			except Exception as e:
 				print(e)
-		print(self.upgrades)
+		if len(self.upgrades):
+			print("upgrades needed for:")
+			for host in self.upgrades:
+				print('upgrade ' + host['IPaddress'] +  'to' + host['bin'])
 
 	def upgradeswitch(self):
 		for host in self.upgrades:
 			try:
-			
+				print('\n####################################################\n')
+				print('\ntry upgrade ', host['IPaddress'],host['model'],'\n')
+				if not self.ping(host['IPaddress']):
+					raise Exception('host not reachable')
 				if host['model'].startswith('C38'):
 					up = cup.c38XXUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
 						username=self.suser,password=self.spasswd,
@@ -223,16 +260,25 @@ class Ciscoautoprovision:
 						binary_file=host['bin'],
 						enable_password=self.senable, debug=self.debug)
 				else:
-					up = cup.ciscoupgrade(host=host['IPaddress'],tftpserver=self.tftp,
+					up = cup.ciscoUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
 						username=self.suser,password=self.spasswd,
 						binary_file=host['bin'],model=host['model'],
 						enable_password=self.senable, debug=self.debug)
-				up.setupTFTP()
+				print('\n####tftp_setup####\n')
+				up.tftp_setup()
+				print('\n####clean software#####')
+				up.cleansoftware()
+				print('\n####tftp get#####')
+				up.tftp_getimage()
+				print('\n#####software install####')
+				up.softwareinstall()
+				print('\n####send reload####')
+				up.sendreload()
 				print(up.log)
-				#activeimage = snmp_get(imageoid,hostname=switchname,community=community,version=2).value
-				#activeimage.split('/')[-1]
+
 			except Exception as e:
-				print(e)
+  				traceback.print_exc()
+				print('ERROR: ' + str(e))
 
 	def generate_rsa(self):
 
