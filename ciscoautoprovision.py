@@ -10,10 +10,10 @@ from pprint import pprint
 import sys
 import json
 import os
-import imp
+#import imp
 import traceback
-cup = imp.load_source('ciscoupgrade', '/srv/samba/Share/scripts/dev/Seth/autoprovisioning/ciscoupgrade.py')
-
+#cup = imp.load_source('ciscoupgrade', os.path.join(os.path.abspath('.'),'ciscoupgrade.py'))
+import ciscoupgrade as cup
 
 try:    # Python 3 compatibility
     input = raw_input
@@ -37,12 +37,13 @@ def generate_config(filename='autoProv.confg'):
 			'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 		},
 		'debug':'1',
+		'output dir':'./output/',
 		'default rwcommunity': 'private',
 		'switch username': 'default',
 		'switch password': 'l4y3r2',
 		'switch enable': 'p4thw4y',
 		'tftp server': '10.0.0.254',
-		'telnet timeout':90
+		'telnet timeout': 90
 	}
 	with open('./cfg/' + filename, 'w') as dc:
 		json.dump(d, dc, indent=4, sort_keys=True)
@@ -95,6 +96,8 @@ class Ciscoautoprovision:
 				raise Exception('target firmware is not a valid dictionary')
 			if data['default rwcommunity']:
 				self.community = data['default rwcommunity']
+			if data['output dir']:
+				self.output_dir = data['output dir']
 			if data['switch username']:
 				self.suser = data['switch username']
 			if data['switch password']:
@@ -112,7 +115,7 @@ class Ciscoautoprovision:
 
 
 	def removeunreachable(self):
-		for i, d in enumerate(self.switches):
+		for  i, d in enumerate(self.switches):
 			ping_str = "ping -W1 -c 1 " + d['IPaddress'] + " > /dev/null 2>&1 "
 			response = os.system(ping_str)
 			#Note:original response is 1 for fail; 0 for success; so we flip it
@@ -209,6 +212,17 @@ class Ciscoautoprovision:
 
 
 	def checkswitchmodels(self):
+		# Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
+		# https://supportforums.cisco.com/discussion/9696971/which-oid-used-get-name-cisco-device-boot-image
+		# This doesn't show up in new devices, apparently...
+
+		# CISCO-ENHANCED-IMAGE-MIB
+		# IOS-XE: SNMPv2-SMI::enterprises.9.9.249.1.2.1.1.2.1000.1
+		#	or CISCO-ENHANCED-IMAGE-MIB::ceImage
+		# You can check if IOS-XE under the sysDescr.0 value
+
+		# CISCO-FLASH-MIB::ciscoFlashFileName
+		# C3560CG: ? SNMPv2-SMI::enterprises.9.9.10.1.1.4.2.1.1.5.1.1.1
 		modeloid = 'entPhysicalModelName'
 		imageoid  = u'sysDescr.0' #.1.3.6.1.2.1.16.19.6.0'
 		self.upgrades
@@ -240,7 +254,7 @@ class Ciscoautoprovision:
 		if len(self.upgrades):
 			print("upgrades needed for:")
 			for host in self.upgrades:
-				print('upgrade ' + host['IPaddress'] +  'to' + host['bin'])
+				print('upgrade', host['IPaddress'], 'to', host['bin'])
 
 	def upgradeswitch(self):
 		for host in self.upgrades:
@@ -260,37 +274,46 @@ class Ciscoautoprovision:
 						binary_file=host['bin'],
 						enable_password=self.senable, debug=self.debug)
 				else:
+					print('Using default upgrade profile')
 					up = cup.ciscoUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
 						username=self.suser,password=self.spasswd,
 						binary_file=host['bin'],model=host['model'],
 						enable_password=self.senable, debug=self.debug)
-				print('\n####tftp_setup####\n')
+				if self.debug:
+					print('\n####tftp_setup####\n')
 				up.tftp_setup()
-				print('\n####clean software#####')
+				if self.debug:
+					print('\n####clean software#####')
 				up.cleansoftware()
-				print('\n####tftp get#####')
+				if self.debug:
+					print('\n####tftp get#####')
 				up.tftp_getimage()
-				print('\n#####software install####')
+				if self.debug:
+					print('\n#####software install####')
 				up.softwareinstall()
-				print('\n####send reload####')
-				up.sendreload()
-				print(up.log)
+				if self.debug:
+					print('\n####send reload####')
+				up.sendreload('no')
+				if self.debug:
+					print(up.log)
 
 			except Exception as e:
   				traceback.print_exc()
-				print('ERROR: ' + str(e))
+				if self.debug:
+					print('ERROR: ' + str(e))
 
 	def generate_rsa(self):
 
 		for host in self.switches:
+			logfilename = os.path.abspath(os.path.join(self.output_dir, host['hostname'] + 'log.txt'))
 			try:
-				print('connecting to host ' + host['hostname'])
+				if self.debug:
+					print('connecting to host ' + host['hostname'])
 				if self.pver3:
 					s = pexpect.spawnu('telnet ' + host['IPaddress'])
 				else:
 					s = pexpect.spawn('telnet ' + host['IPaddress'])
 				s.timeout = self.telnettimeout
-				logfilename = host['hostname'] + 'log.txt'
 				s.logfile = open(logfilename, "w")
 				s.expect('Username: ')
 				s.sendline(self.suser)
@@ -315,24 +338,29 @@ class Ciscoautoprovision:
 				if not keysize.isdigit():
 					keysize = '2048' # default if didnt split the output correctly
 				s.sendline(keysize)
-				print("generating key of size " + keysize,end='')
+				if self.debug:
+					print("generating key of size " + keysize,end='')
 				for n in range(0,30):
-					print('.',end='')
+					if self.debug:
+						print('.',end='')
 					sleep(1)
-				print('.')
+				if self.debug:
+					print('.')
 				s.expect('#')
 				s.logfile.close()
 				s.close()
 				with open(logfilename, "r") as f:
 					output = f.read()
 				if not '[OK]' in  output:
-					print(s.before)
+					if self.debug:
+						print(s.before)
 					raise Exception('did not exit rsa key generation correctly!')
 				else:
 					print('rsa key generated successfully!')
 			except Exception as e:
-				print(e)
+				if self.debug:
+					print(e)
 				with open(logfilename, "r") as f:
 					output = f.read()
-				print(output)
-
+				if self.debug:
+					print(output)

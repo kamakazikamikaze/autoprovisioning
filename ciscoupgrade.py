@@ -33,7 +33,7 @@ class ciscoUpgrade:
 			self._sendrecieve(enable_password + '\r','#') #
 		self._sendrecieve('terminal length 0\r','#')
 	
-	def _sendrecieve(self,command, expect, verbose=False):
+	def _sendrecieve(self,command, expect, yesno='yes', verbose=False):
 		time.sleep(0.5)
 		self.shell.send(command)
 		#create recieve buffer
@@ -53,7 +53,7 @@ class ciscoUpgrade:
 					break
 			elif ('[yes/no]:' in receive_buffer):
 				time.sleep(0.5)
-				self.shell.send('yes\r')
+				self.shell.send(yesno + '\r')
 				receive_buffer = ''
 		time.sleep(0.1)
 		self.log += receive_buffer + '\n'
@@ -76,7 +76,7 @@ class ciscoUpgrade:
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
 		# 
-		bootfile_raw = ciscoUpgrade._sendrecieve(self,'show boot \r','#',verbose=True)
+		bootfile_raw = self._sendrecieve('show boot \r','#',verbose=True)
 		bf = [x for x in bootfile_raw.split() if 'flash' in x][0].split(',')[0]
 		print(bf)
 		if len(bf.split('/')) > 2:
@@ -120,20 +120,17 @@ class ciscoUpgrade:
 		self._sendrecieve('config t\r', '#')
 		self._sendrecieve('boot system switch all flash:/' + self.bin + '\r','#',verbose=True)
 		self._sendrecieve('end\r','#')
+
+	def writemem(self, end=False):
+		if end:
+			self._sendrecieve('end\r','#')
 		self._sendrecieve('write memory\r','#')
 
-	def sendreload(self): #,ttreload = 'Now'
-		#if not 'Now' in ttreload:
-		#	ReasonforReload = ' pathway-eng automatic auto-provisioning switch upgrade...automatic'
-		#	if self.debug:
-		#		print("Sending reload command")
-		#	self._sendrecieve(' reload in ' + str(ttreload) + ReasonforReload , ReasonforReload[-4:])
-		#	self._sendrecieve('\r','#')
-		#else:
+	def sendreload(self, yesno='yes'): # Give the option to not save running config
 		if self.debug:
 			print("rebooting")
 		try:
-			self._sendrecieve("reload \r","[confirm]")
+			self._sendrecieve("reload \r","[confirm]",yesno)
 			self._sendrecieve('\r','')
 			self.shell.keep_this.close()
 		except Exception as e:
@@ -141,6 +138,9 @@ class ciscoUpgrade:
 				'Rebooted successfully!!'
 		if self.debug:
 			print("\n")
+
+	def transfer_production_config(self):
+		pass
 
 	def __exit__(self):
 		self.keep_this.close()
@@ -152,19 +152,19 @@ class c38XXUpgrade(ciscoUpgrade):
 	
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
-		ciscoUpgrade._sendrecieve(self,'software clean \r' ,'#')
-		ciscoUpgrade._sendrecieve(self,'\r','#')
+		self._sendrecieve('software clean \r' ,'#')
+		self._sendrecieve('\r','#')
 
 	def Softwareinstall(self,iOS_TimingFlag = "on-reboot"):
 		''' prepares and tells the switch to upgrade "on-reboot" by default'''
-		ciscoUpgrade._sendrecieve(self,'software install file flash:' + ciscoUpgrade.bin +" "+ iOS_TimingFlag + '\r','#')
+		self._sendrecieve('software install file flash:' + self.bin +" "+ iOS_TimingFlag + '\r','#')
 		time.sleep(0.5)
 
 
 class c45xxUpgrade(ciscoUpgrade):
 	
 	def __init__(self,host,tftpserver,binary_file,username,password,enable_password,debug):
-		ciscoUpgrade.__init__(self,host=host,model='C4506',tftpserver=tftpserver,binary_file=binary_file,username=username,password=password,enable_password=enable_password,debug=debug)
+	 	ciscoUpgrade.__init__(self,host=host,model='C4506',tftpserver=tftpserver,binary_file=binary_file,username=username,password=password,enable_password=enable_password,debug=debug)
 
 	def tftp_getimage(self):
 		'''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
@@ -172,8 +172,8 @@ class c45xxUpgrade(ciscoUpgrade):
 		successful = False
 		attempts = 0
 		while not successful and attempts < 2:
-			ciscoUpgrade._sendrecieve(self,'copy tftp://' + self.tftpserver +'/bin/' + self.bin + ' bootflash:' + self.bin + '\r' ,'?')	
-			output = ciscoUpgrade._sendrecieve(self,'\r','#',verbose=True)
+			self._sendrecieve('copy tftp://' + self.tftpserver +'/bin/' + self.bin + ' bootflash:' + self.bin + '\r' ,'?')	
+			output = self._sendrecieve('\r','#',verbose=True)
 			if  'Error' not in output:
 				successful = True
 			else:
@@ -187,7 +187,7 @@ class c45xxUpgrade(ciscoUpgrade):
 
 	def verifyimage(self):
 		'''Check image for errors. Allow caller function to dictate number of attempts'''
-		output = ciscoUpgrade._sendrecieve(self,'verify bootflash:' + self.bin + '\r', '#',verbose=True)
+		output = self._sendrecieve('verify bootflash:' + self.bin + '\r', '#',verbose=True)
 		if 'Error' in output:
 			raise VerifyException('Bad image')
 
@@ -195,7 +195,7 @@ class c45xxUpgrade(ciscoUpgrade):
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
 		# 
-		bootfile_raw = ciscoUpgrade._sendrecieve(self,'show bootvar \r','#',verbose=True)
+		bootfile_raw = self._sendrecieve('show bootvar \r','#',verbose=True)
 		bf = [x for x in bootfile_raw.split() if 'flash' in x][0].split(',')[0]
 		bf.split('.bin')[0] + '.bin'
 		print(bf)
@@ -208,7 +208,7 @@ class c45xxUpgrade(ciscoUpgrade):
 			self._sendrecieve('delete  /force ' + bf + '\r' ,'#')
 	
 	def softwareinstall(self):
-		ciscoUpgrade._sendrecieve(self,'config t\r', '#')
-		ciscoUpgrade._sendrecieve(self,'boot system flash bootflash:/' + self.bin + ' \r','#',verbose=True)
-		ciscoUpgrade._sendrecieve(self,'end\r','#')
-		ciscoUpgrade._sendrecieve(self,'write memory\r','#')
+		self._sendrecieve('config t\r', '#')
+		self._sendrecieve('boot system flash bootflash:/' + self.bin + ' \r','#',verbose=True)
+		self._sendrecieve('end\r','#')
+		# ciscoUpgrade._sendrecieve(self,'write memory\r','#')
