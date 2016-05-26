@@ -10,6 +10,7 @@ from pprint import pprint
 import sys
 import json
 import os
+import re
 #import imp
 import traceback
 #cup = imp.load_source('ciscoupgrade', os.path.join(os.path.abspath('.'),'ciscoupgrade.py'))
@@ -225,12 +226,23 @@ class Ciscoautoprovision:
 		# C3560CG: ? SNMPv2-SMI::enterprises.9.9.10.1.1.4.2.1.1.5.1.1.1
 		modeloid = 'entPhysicalModelName'
 		imageoid  = u'sysDescr.0' #.1.3.6.1.2.1.16.19.6.0'
+		# filesoid = u'CISCO-FLASH-MIB::ciscoFlashFileName'
+		bootoid = u'SNMPv2-SMI::enterprises.9.2.1.73.0'
 		self.upgrades
 		for host in self.switches:
 			try:
-				softimage_raw = snmp_get(imageoid,hostname=host['IPaddress'],community=self.community,version=2).value
-				softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
-				softimage = self.rm_nonalnum(softimage_raw)
+				# Get the actual file name; not likely to work if startup-config is not present
+				softimage_raw = snmp_get(bootoid, hostname=host['IPaddress'],community=self.community,version=2).value.split('/')[-1]
+				if not softimage_raw:
+					softimage_raw = snmp_get(imageoid,hostname=host['IPaddress'],community=self.community,version=2).value
+					#softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
+					#softimage = self.rm_nonalnum(softimage_raw)
+					if re.findall(r'\d+\(.+?\)\.[eE]', softimage_raw):
+						t = softimage_raw
+						t = re.sub(r'\.','',t)
+						t = re.sub(r'\((?=\d)','-',t)
+						softimage_raw = re.sub(r'\)(?=\w+\d+)','.',t)
+					softimage = [re.sub(r'\-m$', '', x.lower()) for x in re.findall(r'(?<=Software \()[\w\d-]+(?=\))|(?<=Version )[\d\.\w-]+',softimage_raw)]
 				physical = snmp_walk(modeloid,hostname=host['IPaddress'],community=self.community,version=2)
 				if len(physical[0].value) == 0:
 				    del physical[0]
@@ -240,7 +252,7 @@ class Ciscoautoprovision:
 				if model not in self.firmwares.keys():
 					raise Exception('model' + model + 'not found in firmware list!')
 					#TODO: make a way to add firmware
-				if softimage in self.rm_nonalnum(self.firmwares[model]):
+				if  all(x in self.firmwares[model].lower() for x in softimage):
 					pass
 				else:
 					host['model'] = model
