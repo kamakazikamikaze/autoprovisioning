@@ -18,9 +18,9 @@ import traceback
 import ciscoupgrade as cup
 
 try:    # Python 3 compatibility
-    input = raw_input
+	input = raw_input
 except NameError:
-    pass
+	pass
 
 def generate_config(filename='autoProv.confg'):
 	d = {
@@ -34,7 +34,7 @@ def generate_config(filename='autoProv.confg'):
 			'C3750': 'c3750-ipbasek9-mz.122-55.SE9.bin',
 			'C3750G': 'c3750-ipbasek9-mz.122-55.SE9.bin',
 			'C3750V2': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-			'C3750X': 'c3750e-ipbasek9-mz.122-53.SE2.bin',
+			'C3750X': 'c3750e-ipbasek9-mz.150-2.SE9.bin',
 			'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 			'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 		},
@@ -189,19 +189,32 @@ class Ciscoautoprovision:
 			results = []
 			errs = set()
 			with open(filename, 'r+b') as f:
-				m = mmap.mmap(f.fileno(), 0)
-				res = set(re.findall(r'null\-[\w\d\.\-]+', m))
+				log = mmap.mmap(f.fileno(), 0)
+				res = set(re.findall(r'null\-[\w\d\.\-]+', log))
 				for s in res:
 					host = {}
 					host['hostname'] = s
 					try:
 						host['IPaddress'] = gethostbyname(s)
+						host['neighbors'] = {}
+						neighbors = []
+						for r in [re.findall(r'(?<=, with )([\d\w\-\.\/]+ [\d\w\-\.\/]+)', x) for x in re.findall(r'.*' + re.escape(s) + r'.*CDP.*', log)]:
+							neighbors.extend(r)
+						neighbors = list(set(neighbors))
+						for neighbor in neighbors:
+							neighbor = neighbor.split()
+							if neighbor[0] in host['neighbors'].keys():
+								host['neighbors'][neighbor[0]].append(neighbor[1])
+							else:
+								host['neighbors'][neighbor[0]] = [neighbor[1]]
+						# host['neighbors'] = neighbors
 						results.append(host)
 					except:
 						if s not in list(errs):
 							errs.add(s)
 							print('cannot resolve hostname: ' + s)
-			self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
+			#self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
+			self.switches = results
 			pprint(self.switches)
 		except Exception as e:
 			traceback.print_exc()
@@ -247,7 +260,7 @@ class Ciscoautoprovision:
 					softimage = [re.sub(r'\-m$', '', x.lower()) for x in re.findall(r'(?<=Software \()[\w\d-]+(?=\))|(?<=Version )[\d\.\w-]+',softimage_raw)]
 				physical = snmp_walk(modeloid,hostname=host['IPaddress'],community=self.community,version=2)
 				if len(physical[0].value) == 0:
-				    del physical[0]
+					del physical[0]
 				model = str(physical[0].value.split('-')[1])
 				
 				print(host['IPaddress'],model,softimage)
@@ -255,12 +268,14 @@ class Ciscoautoprovision:
 					raise Exception('model' + model + 'not found in firmware list!')
 					#TODO: make a way to add firmware
 				if type(softimage) is unicode and softimage in self.firmwares[model].lower():
-					pass
+					host['model'] = model
+					host['bin'] = self.firmwares[model]
 				elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
-					pass
+					host['model'] = model
+					host['bin'] = self.firmwares[model]
 				else:
 					host['model'] = model
-					host['bin'] = self.firmwares[model] 
+					host['bin'] = self.firmwares[model]
 					self.upgrades.append(host)
 				#if not softimage or not '.bin' in softimage:
 				#	print('its none')
@@ -314,7 +329,7 @@ class Ciscoautoprovision:
 					print(up.log)
 
 			except Exception as e:
-  				traceback.print_exc()
+				traceback.print_exc()
 				if self.debug:
 					print('ERROR: ' + str(e))
 
@@ -345,8 +360,8 @@ class Ciscoautoprovision:
 				s.sendline('crypto key generate rsa')
 				s.expect(']: ')
 				if 'yes' in s.before:
-				    s.sendline('yes')
-				    s.expect(']: ')
+					s.sendline('yes')
+					s.expect(']: ')
 				#get largest possible keysize
 				s.sendline('?')
 				s.expect(']: ')
@@ -355,6 +370,8 @@ class Ciscoautoprovision:
 					keysize = '2048' # default if didnt split the output correctly
 				s.sendline(keysize)
 				if self.debug:
+					if '3750' in host['model'] and int(keysize) > 2048:
+						print('Next device is a', host['model'], '!')
 					print("generating key of size " + keysize,end='')
 				for n in range(0,30):
 					if self.debug:
@@ -362,6 +379,10 @@ class Ciscoautoprovision:
 					sleep(1)
 				if self.debug:
 					print('.')
+				# Though unlikely that we will ever use it, the 3750X takes
+				# over 400 seconds to generate an RSA key-pair with a 4096-bit
+				# modulus. We have to increase the timeout to accomodate for this! 
+				s.timeout = self.telnettimeout if not ('3750' in host['model'] and int(keysize) > 2048) else 600
 				s.expect('#')
 				s.logfile.close()
 				s.close()
