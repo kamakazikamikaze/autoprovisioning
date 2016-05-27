@@ -24,11 +24,11 @@ except NameError:
 def generate_config(filename='autoProv.confg'):
 	d = {
 		'target firmware':{
-			'C3560': 'c3560-ipbasek9-mz.122-53.SE2.bin',
+			'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
 			'C3560CG': 'c3560c405ex-universalk9-mz.150-2.SE.bin',
 			'C3560CX': 'c3560cx-universalk9-mz.152-4.E1.bin',
-			'C3560G': 'c3560-ipbasek9-mz.122-53.SE2.bin',
-			'C3560V2': 'c3560-ipbasek9-mz.122-53.SE2.bin',
+			'C3560G': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+			'C3560V2': 'c3560-ipbasek9-mz.122-55.SE10.bin',
 			'C3560X': 'c3560e-universalk9-mz.122-55.SE3.bin',
 			'C3750': 'c3750-ipbasek9-mz.122-55.SE9.bin',
 			'C3750G': 'c3750-ipbasek9-mz.122-55.SE9.bin',
@@ -232,16 +232,19 @@ class Ciscoautoprovision:
 		for host in self.switches:
 			try:
 				# Get the actual file name; not likely to work if startup-config is not present
-				softimage_raw = snmp_get(bootoid, hostname=host['IPaddress'],community=self.community,version=2).value.split('/')[-1]
+				softimage_raw = snmp_get(bootoid, hostname=host['IPaddress'],community=self.community,version=2).value
+				softimage = softimage_raw.split('/')[-1].lower()
 				if not softimage_raw:
 					softimage_raw = snmp_get(imageoid,hostname=host['IPaddress'],community=self.community,version=2).value
 					#softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
 					#softimage = self.rm_nonalnum(softimage_raw)
+					# Is there a ##.#(##)EX in the string?
 					if re.findall(r'\d+\(.+?\)\.[eE]', softimage_raw):
 						t = softimage_raw
 						t = re.sub(r'\.','',t)
 						t = re.sub(r'\((?=\d)','-',t)
 						softimage_raw = re.sub(r'\)(?=\w+\d+)','.',t)
+						# Also remove the trailing '-m' in the reported image name
 					softimage = [re.sub(r'\-m$', '', x.lower()) for x in re.findall(r'(?<=Software \()[\w\d-]+(?=\))|(?<=Version )[\d\.\w-]+',softimage_raw)]
 				physical = snmp_walk(modeloid,hostname=host['IPaddress'],community=self.community,version=2)
 				if len(physical[0].value) == 0:
@@ -252,7 +255,9 @@ class Ciscoautoprovision:
 				if model not in self.firmwares.keys():
 					raise Exception('model' + model + 'not found in firmware list!')
 					#TODO: make a way to add firmware
-				if  all(x in self.firmwares[model].lower() for x in softimage):
+				if type(softimage) is unicode and softimage in self.firmwares[model].lower():
+					pass
+				elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
 					pass
 				else:
 					host['model'] = model
