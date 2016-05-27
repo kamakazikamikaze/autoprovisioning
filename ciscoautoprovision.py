@@ -11,6 +11,7 @@ import sys
 import json
 import os
 import re
+import mmap
 #import imp
 import traceback
 #cup = imp.load_source('ciscoupgrade', os.path.join(os.path.abspath('.'),'ciscoupgrade.py'))
@@ -185,23 +186,21 @@ class Ciscoautoprovision:
 
 	def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
 		try:
-			logs = []
-			with open(filename) as f:
-				logs = [line.strip().split() for line in f.readlines() if len(line)]
 			results = []
 			errs = set()
-			for log in logs:
-   				 for x in log:
-					if 'null' in x:
-						host = {}
-						host['hostname'] = x
-						try:
-							host['IPaddress'] = gethostbyname(x)
-							results.append(host)
-						except:
-							if x not in list(errs):
-								errs.add(x)
-								print('cannot resolve hostname: ' + x)
+			with open(filename, 'r+b') as f:
+				m = mmap.mmap(f.fileno(), 0)
+				res = set(re.findall(r'null\-[\w\d\.\-]+', m))
+				for s in res:
+					host = {}
+					host['hostname'] = s
+					try:
+						host['IPaddress'] = gethostbyname(s)
+						results.append(host)
+					except:
+						if s not in list(errs):
+							errs.add(s)
+							print('cannot resolve hostname: ' + s)
 			self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
 			pprint(self.switches)
 		except Exception as e:
