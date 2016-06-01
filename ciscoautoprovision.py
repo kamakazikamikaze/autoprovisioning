@@ -45,7 +45,8 @@ def generate_config(filename='autoProv.confg'):
 		'switch password': 'l4y3r2',
 		'switch enable': 'p4thw4y',
 		'tftp server': '10.0.0.254',
-		'telnet timeout': 90
+		'telnet timeout': 90,
+		'production rwcommunity' : ''
 	}
 	with open('./cfg/' + filename, 'w') as dc:
 		json.dump(d, dc, indent=4, sort_keys=True)
@@ -100,6 +101,8 @@ class Ciscoautoprovision:
 				self.community = data['default rwcommunity']
 			if data['output dir']:
 				self.output_dir = data['output dir']
+			if data['production rwcommunity']:
+				self.prodcommunity = data['production rwcommunity']
 			if data['switch username']:
 				self.suser = data['switch username']
 			if data['switch password']:
@@ -123,6 +126,8 @@ class Ciscoautoprovision:
 			#Note:original response is 1 for fail; 0 for success; so we flip it
 			if response:
 				self.switches.pop(i)
+
+
 	#user=None,passwd=None
 	def search(self,target='http://localhost',index='logstash-networkswitches',time=3,port=None,authenticate=False):
 		if port is None:
@@ -220,6 +225,7 @@ class Ciscoautoprovision:
 			traceback.print_exc()
 			print(e)
 
+
 	def rm_nonalnum(self,string):
 		return ''.join(map(lambda x: x if x.isalnum() else '',string))
 
@@ -251,7 +257,7 @@ class Ciscoautoprovision:
 					#softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
 					#softimage = self.rm_nonalnum(softimage_raw)
 					# Is there a ##.#(##)EX in the string?
-					if re.findall(r'\d+\(.+?\)\.[eE]', softimage_raw):
+					if re.findall(r'\d+\(.+?\)[eE]', softimage_raw):
 						t = softimage_raw
 						t = re.sub(r'\.','',t)
 						t = re.sub(r'\((?=\d)','-',t)
@@ -286,6 +292,7 @@ class Ciscoautoprovision:
 			print("upgrades needed for:")
 			for host in self.upgrades:
 				print('upgrade', host['IPaddress'], 'to', host['bin'])
+
 
 	def upgradeswitch(self):
 		for host in self.upgrades:
@@ -333,8 +340,8 @@ class Ciscoautoprovision:
 				if self.debug:
 					print('ERROR: ' + str(e))
 
-	def generate_rsa(self):
 
+	def generate_rsa(self):
 		for host in self.switches:
 			logfilename = os.path.abspath(os.path.join(self.output_dir, host['hostname'] + 'log.txt'))
 			try:
@@ -401,3 +408,24 @@ class Ciscoautoprovision:
 					output = f.read()
 				if self.debug:
 					print(output)
+
+
+	def get_new_name(self):
+		for switch in self.switches:
+			oid_index = []
+			for neighbor, ports in switch['neighbors'].iteritems():
+				alias = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifAlias')
+				descr = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifDescr')
+				oid_index += [x.oid_index for x in descr if x.value in ports]
+			newname = ''
+			for i in oid_index:
+				try:
+					newname = alias[int(i) - 1].value.split()[0]
+					# newname = [x.value.split()[0] for x in alias if x.oid_index == i][0]
+					if newname:
+						if self.debug:
+							print(switch['hostname'], 'found new name:', newname)
+						switch['new name'] = newname
+						pass # TODO
+				except IndexError:
+					print(switch['hostname'], 'is not specified on any feedports!')
