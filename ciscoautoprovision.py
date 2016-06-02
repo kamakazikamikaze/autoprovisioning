@@ -1,5 +1,4 @@
 from __future__ import print_function
-#import pandas as pd
 from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr, gethostbyname
 from getpass import getpass, getuser
@@ -14,9 +13,11 @@ import re
 import mmap
 import tftpy
 import multiprocessing as mp
-#import imp
+import subprocess
+import tempfile
+import string
+import random
 import traceback
-#cup = imp.load_source('ciscoupgrade', os.path.join(os.path.abspath('.'),'ciscoupgrade.py'))
 import ciscoupgrade as cup
 
 try:    # Python 3 compatibility
@@ -114,6 +115,7 @@ class Ciscoautoprovision:
 				self.senable = data['switch enable']
 			if data['tftp server']:
 				self.tftp = data['tftp server']
+			self._rsa_pass_size = 32 if not 'rsa pass size' in data.keys() else data['rsa pass size']
 			if int(data['telnet timeout']) < 30:
 				raise Exception('telnet timeout must be greater than 30 seconds')
 			else:
@@ -484,6 +486,51 @@ class Ciscoautoprovision:
 			print('\n#####software install####')
 		switch['session'].softwareinstall()
 
+
+	def _genrsa(self, switch):
+		"""
+		Securely generate an RSA keypair for switch.
+		The results are added as a dictionary with the key switch['rsa']
+
+		Raises an Exception if an error occurs while generating a private or public key
+		
+		Keyword arguments:
+		switch -- dictionary representing the device (switch)
+		"""
+		password = self._randstr(self._rsa_pass_size)
+		modulus = '4096' if not switch['model'] in ['C3560', 'C3750', 'C2940', 'C2960'] else '2048'
+		temp = tempfile.NamedTemporaryFile()
+		proc = subprocess.Popen(['openssl', 'genrsa', '-des3', '-passout', 'pass:'+password, '-out', temp.name, modulus], stdout=subprocess.PIPE)
+		(out, err) = proc.communicate()
+		if err is not None:
+			raise Exception("Error generating private RSA key!")
+		proc = subprocess.Popen(['openssl', 'rsa', '-in', temp.name, '-passin', 'pass:'+password, '-outform', 'PEM', '-pubout'], stdout=subprocess.PIPE)
+		(out, err) = proc.communicate()
+		if err is not None or len(out) < 5:
+			raise Exception("Error generating public RSA key!")
+		public = [line + '\r' for line in out.split('\n')]
+		with open(temp.name, 'r+b') as f:
+			private = [line.replace('\n','\r') for line in f]
+		del temp
+		switch['rsa'] = {}
+		switch['rsa']['public'] = public
+		switch['rsa']['private'] = private
+		switch['rsa']['password'] = password
+
+
+	def _randstr(self, size):
+		"""
+		Securely generate a random string of a specified length
+		Can include uppercase or lowercase ASCII characters and/or integers
+
+		Keyword arguments:
+		length -- desired size of string
+
+		Returns:
+		Random string
+		"""
+		# http://stackoverflow.com/a/23728630/1993468
+		return ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(size))
 
 
 	def generate_rsa(self):
