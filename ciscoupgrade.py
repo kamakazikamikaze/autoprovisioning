@@ -32,6 +32,7 @@ class ciscoUpgrade:
 			self._sendrecieve('enable\r','assword:') #enabled status!!!
 			self._sendrecieve(enable_password + '\r','#') #
 		self._sendrecieve('terminal length 0\r','#')
+		self._sendrecieve('terminal width 0\r','#')
 	
 	def _sendrecieve(self,command, expect, yesno='yes', verbose=False):
 		time.sleep(0.5)
@@ -139,8 +140,29 @@ class ciscoUpgrade:
 		if self.debug:
 			print("\n")
 
-	def transfer_production_config(self):
-		pass
+	#def transfer_production_config(self):
+	#	pass
+	def tftp_getstartup(self,filename):
+		if self.debug:
+			print('tftp getting startup config ' + filename)
+		self._sendrecieve('copy tftp://' + self.tftpserver + filename + ' startup-config\r',']?',verbose=True)
+		out = self._sendrecieve('\r','#',verbose=True)
+		if 'Error' in out:
+			raise Exception
+
+	def tftp_replaceconf(self,filename):
+		if self.debug:
+			print('replacing config file via tftp')
+		#configure replace tftp://10.0.0.254/autoprov/cap_c3850_config.conf  list force ignorecase
+		print('looking for file tftp://' + self.tftpserver + filename)
+		out = self._sendrecieve('configure replace tftp://' + self.tftpserver + filename + ' list force ignorecase\r','[OK',verbose=True)
+		print('####output####')
+		print(out)
+		#if '\%The input file is not a valid config file.' in out:
+		#	raise Exception
+		#if 'Error' in out:
+		#	raise Exception
+
 
 	def __exit__(self):
 		self.keep_this.close()
@@ -212,3 +234,4 @@ class c45xxUpgrade(ciscoUpgrade):
 		self._sendrecieve('boot system flash bootflash:/' + self.bin + ' \r','#',verbose=True)
 		self._sendrecieve('end\r','#')
 		# ciscoUpgrade._sendrecieve(self,'write memory\r','#')
+

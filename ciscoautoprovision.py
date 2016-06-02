@@ -1,6 +1,6 @@
 from __future__ import print_function
 #import pandas as pd
-from easysnmp import snmp_walk, snmp_get
+from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr, gethostbyname
 from getpass import getpass, getuser
 from time import sleep
@@ -12,6 +12,8 @@ import json
 import os
 import re
 import mmap
+import tftpy
+import multiprocessing as mp
 #import imp
 import traceback
 #cup = imp.load_source('ciscoupgrade', os.path.join(os.path.abspath('.'),'ciscoupgrade.py'))
@@ -61,6 +63,7 @@ class Ciscoautoprovision:
 		self.debug = 0
 		self.firmwares = {}
 		self.community = ''
+		self.prodcommunity = ''
 		self.suser = ''
 		self.spasswd = ''
 		self.senable = ''
@@ -73,7 +76,7 @@ class Ciscoautoprovision:
 		else:
 			self.user = username
 		if password is None:
-			self.passwd = getpass('sea kibana password: ')
+			self.passwd = None
 		else:
 			self.passwd = password
 
@@ -119,74 +122,75 @@ class Ciscoautoprovision:
 			sys.exit("An error occurred while parsing the config file: " + str(e))
 
 
-	def removeunreachable(self):
-		for  i, d in enumerate(self.switches):
-			ping_str = "ping -W1 -c 1 " + d['IPaddress'] + " > /dev/null 2>&1 "
-			response = os.system(ping_str)
-			#Note:original response is 1 for fail; 0 for success; so we flip it
-			if response:
-				self.switches.pop(i)
+	#def removeunreachable(self):
+	#	for i, d in enumerate(self.switches):
+	#		ping_str = "ping -W1 -c 1 " + d['IPaddress'] + " > /dev/null 2>&1 "
+	#		response = os.system(ping_str)
+	#		#Note:original response is 1 for fail; 0 for success; so we flip it
+	#		if response:
+	#			self.switches.pop(i)
 
 
 	#user=None,passwd=None
-	def search(self,target='http://localhost',index='logstash-networkswitches',time=3,port=None,authenticate=False):
-		if port is None:
-			port = ''
-		else:
-			port = ':' + port  + '/' 
-		url = target + port + index + '*/_search/?pretty' 
-		term = 'Native VLAN mismatch*'
-		query = { 
-			'query': {
-				'filtered': {
-					'query': {
-						'query_string': {
-							'query': term,
-							'analyze_wildcard': 'true'
-						}
-					}
-				},
-			},
-			'filter': {
-				'bool': {
-					'must': [{
-						'range': {
-							'@timestamp': {
-								'gte': 'now-' + str(time) + 'h',
-								'lte': 'now'
-							}
-						}
-					}],
-				}
-			},
-			'size': 300000
-		}
-		#
-		if authenticate:
-			r = requests.get(url=url, data=json.dumps(query), verify=False, auth=(self.user,self.passwd))
-		else:
-			r = requests.get(url=url,data=json.dumps(query),verify=False)
-		r.raise_for_status()
-		result_dict = r.json()
-		hits = result_dict['hits']['hits']
-		results = []
-		for x in hits:
-			if '(1),' in x['_source']['message']:
-				result = {}
-				if 'logSourceIP' in x['_source'].keys():
-					result['IPaddress'] = x['_source']['logSourceIP']
-				elif 'host' in x['_source'].keys():
-					result['IPaddress'] = x['_source']['host']
-				result['hostname'] = gethostbyaddr(result['IPaddress'])[0]
-				result['feed'] = x['_source']['message'].split('with')[1].split()[0] # word after with
-				if 'null' in result['hostname']:
-					results.append(result)
-		self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
-		#self.removeunreachable() # remove unreachable switches from list
-		#list(set(map(lambda x: {x['_source']['host'] : x['_source']['message']},r.json()['hits']['hits'])))
-		#[(x['_source']['host'] , x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
-		#[(x['_source']['logSource'], x['_source']['logSourceIP'], x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
-		pprint(self.switches)
+	#def search(self,target='http://localhost',index='logstash-networkswitches',time=3,port=None,authenticate=False):
+	#	self.passwd = getpass('sea password: ')
+	#	if port is None:
+	#		port = ''
+	#	else:
+	#		port = ':' + port  + '/' 
+	#	url = target + port + index + '*/_search/?pretty' 
+	#	term = 'Native VLAN mismatch*'
+	#	query = { 
+	#		'query': {
+	#			'filtered': {
+	#				'query': {
+	#					'query_string': {
+	#						'query': term,
+	#						'analyze_wildcard': 'true'
+	#					}
+	#				}
+	#			},
+	#		},
+	#		'filter': {
+	#			'bool': {
+	#				'must': [{
+	#					'range': {
+	#						'@timestamp': {
+	#							'gte': 'now-' + str(time) + 'h',
+	#							'lte': 'now'
+	#						}
+	#					}
+	#				}],
+	#			}
+	#		},
+	#		'size': 300000
+	#	}
+	#	#
+	#	if authenticate:
+	#		r = requests.get(url=url, data=json.dumps(query), verify=False, auth=(self.user,self.passwd))
+	#	else:
+	#		r = requests.get(url=url,data=json.dumps(query),verify=False)
+	#	r.raise_for_status()
+	#	result_dict = r.json()
+	#	hits = result_dict['hits']['hits']
+	#	results = []
+	#	for x in hits:
+	#		if '(1),' in x['_source']['message']:
+	#			result = {}
+	#			if 'logSourceIP' in x['_source'].keys():
+	#				result['IPaddress'] = x['_source']['logSourceIP']
+	#			elif 'host' in x['_source'].keys():
+	#				result['IPaddress'] = x['_source']['host']
+	#			result['hostname'] = gethostbyaddr(result['IPaddress'])[0]
+	#			result['feed'] = x['_source']['message'].split('with')[1].split()[0] # word after with
+	#			if 'null' in result['hostname']:
+	#				results.append(result)
+	#	self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
+	#	#self.removeunreachable() # remove unreachable switches from list
+	#	#list(set(map(lambda x: {x['_source']['host'] : x['_source']['message']},r.json()['hits']['hits'])))
+	#	#[(x['_source']['host'] , x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
+	#	#[(x['_source']['logSource'], x['_source']['logSourceIP'], x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
+	#	pprint(self.switches)
 
 
 	def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
@@ -226,131 +230,272 @@ class Ciscoautoprovision:
 			print(e)
 
 
-	def rm_nonalnum(self,string):
-		return ''.join(map(lambda x: x if x.isalnum() else '',string))
+	#def rm_nonalnum(self,string):
+	#	return ''.join(map(lambda x: x if x.isalnum() else '',string))
 
-
-	def checkswitchmodels(self):
-		# Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
-		# https://supportforums.cisco.com/discussion/9696971/which-oid-used-get-name-cisco-device-boot-image
-		# This doesn't show up in new devices, apparently...
-
-		# CISCO-ENHANCED-IMAGE-MIB
-		# IOS-XE: SNMPv2-SMI::enterprises.9.9.249.1.2.1.1.2.1000.1
-		#	or CISCO-ENHANCED-IMAGE-MIB::ceImage
-		# You can check if IOS-XE under the sysDescr.0 value
-
-		# CISCO-FLASH-MIB::ciscoFlashFileName
-		# C3560CG: ? SNMPv2-SMI::enterprises.9.9.10.1.1.4.2.1.1.5.1.1.1
-		modeloid = 'entPhysicalModelName'
-		imageoid  = u'sysDescr.0' #.1.3.6.1.2.1.16.19.6.0'
-		# filesoid = u'CISCO-FLASH-MIB::ciscoFlashFileName'
-		bootoid = u'SNMPv2-SMI::enterprises.9.2.1.73.0'
-		self.upgrades
-		for host in self.switches:
+	def get_information(self):
+		for switch in self.switches:
 			try:
-				# Get the actual file name; not likely to work if startup-config is not present
-				softimage_raw = snmp_get(bootoid, hostname=host['IPaddress'],community=self.community,version=2).value
-				softimage = softimage_raw.split('/')[-1].lower()
-				if not softimage_raw:
-					softimage_raw = snmp_get(imageoid,hostname=host['IPaddress'],community=self.community,version=2).value
-					#softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
-					#softimage = self.rm_nonalnum(softimage_raw)
-					# Is there a ##.#(##)EX in the string?
-					if re.findall(r'\d+\(.+?\)[eE]', softimage_raw):
-						t = softimage_raw
-						t = re.sub(r'\.','',t)
-						t = re.sub(r'\((?=\d)','-',t)
-						softimage_raw = re.sub(r'\)(?=\w+\d+)','.',t)
-						# Also remove the trailing '-m' in the reported image name
-					softimage = [re.sub(r'\-m$', '', x.lower()) for x in re.findall(r'(?<=Software \()[\w\d-]+(?=\))|(?<=Version )[\d\.\w-]+',softimage_raw)]
-				physical = snmp_walk(modeloid,hostname=host['IPaddress'],community=self.community,version=2)
-				if len(physical[0].value) == 0:
-					del physical[0]
-				model = str(physical[0].value.split('-')[1])
-				
-				print(host['IPaddress'],model,softimage)
-				if model not in self.firmwares.keys():
-					raise Exception('model' + model + 'not found in firmware list!')
-					#TODO: make a way to add firmware
-				if type(softimage) is unicode and softimage in self.firmwares[model].lower():
-					host['model'] = model
-					host['bin'] = self.firmwares[model]
-				elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
-					host['model'] = model
-					host['bin'] = self.firmwares[model]
-				else:
-					host['model'] = model
-					host['bin'] = self.firmwares[model]
-					self.upgrades.append(host)
-				#if not softimage or not '.bin' in softimage:
-				#	print('its none')
-				#	softimage = self.telnet_switchmodel(host)
+				self.__get_model__(switch)
+				self.__get_new_name__(switch)
+				self.__get_serial__(switch)
+			except EasySNMPTimeoutError:
+				print(switch['IPaddress'] + ' timed out.')
+				print('removing ' + switch['IPaddress'] + ' from switch list.')
+				self.switches.pop(self.switches.index(switch))
+			except Exception:
+				if self.debug:
+					print('error retrieving switch information from ' + switch['IP'])
+					traceback.print_exc()
+
+
+	def get_model(self):
+		for switch in self.switches:
+			try:
+				self.__get_model__(switch)
+			except EasySNMPTimeoutError:
+				print(switch['IPaddress'] + ' timed out.')
+				print('removing ' + switch['IPaddress'] + ' from switch list.')
+				self.switches.pop(self.switches.index(switch))
+			except Exception as e:
+				traceback.print_exc()
+				print(e)
+		
+
+	def get_new_name(self):
+		for switch in self.switches:
+			try:
+				self.__get_new_name__(switch)
+			except:
+				if self.debug:
+					print('Could not get new name for ' + switch['IPaddress'])
+					traceback.print_exc()
+
+
+	def get_serial(self):
+		for switch in self.switches:
+			try:
+				serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
+				switch['serial'] = serialnum.value
+				if self.debug:
+					print('serial number for ' + switch['IPaddress'] + ' is ' + switch['serial'])
+			except Exception:
+				print('error while getting serial for switch ' + switch['IPaddress'])
+				if self.debug:
+					traceback.print_exc()
+
+
+
+
+	def ssh_opensession(self):
+		for switch in self.switches:
+			try:
+				self.__ssh_opensession__(switch)
 			except Exception as e:
 				print(e)
-		if len(self.upgrades):
-			print("upgrades needed for:")
-			for host in self.upgrades:
-				print('upgrade', host['IPaddress'], 'to', host['bin'])
+				if self.debug:
+					traceback.print_exc()
 
 
-	def upgradeswitch(self):
-		for host in self.upgrades:
+	def prepupgrade(self):
+		for switch in self.switches:
+			if switch['IPaddress'] in self.upgrades:
+				try:
+					self.__prepupgrade__(switch)
+				except Exception as e:
+					print(e)
+					traceback.print_exc()
+
+
+	def tftp_replace(self):
+		for switch in self.switches:
+			if switch['IPaddress'] not in self.upgrades:
+				try:
+					self.__tftp_replace__(switch)
+				except Exception as e:
+					traceback.print_exc()
+					if self.debug:
+						print('ERROR: ' + str(e))
+
+
+	def tftp_startup(self):
+		for switch in self.switches:
+			if switch['IPaddress'] in self.upgrades:
+				try:
+					self.__tftp_startup__(switch)
+				except Exception as e:
+					traceback.print_exc()
+					if self.debug:
+						print('ERROR: ' + str(e))
+
+	
+	def reboot_save(self):
+		for switch in self.switches:
 			try:
-				print('\n####################################################\n')
-				print('\ntry upgrade ', host['IPaddress'],host['model'],'\n')
-				if not self.ping(host['IPaddress']):
-					raise Exception('host not reachable')
-				if host['model'].startswith('C38'):
-					up = cup.c38XXUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
-						username=self.suser,password=self.spasswd,
-						binary_file=host['bin'],
-						enable_password=self.senable, debug=self.debug)
-				elif host['model'].startswith('C45'):
-					up = cup.c45xxUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
-						username=self.suser,password=self.spasswd,
-						binary_file=host['bin'],
-						enable_password=self.senable, debug=self.debug)
-				else:
-					print('Using default upgrade profile')
-					up = cup.ciscoUpgrade(host=host['IPaddress'],tftpserver=self.tftp,
-						username=self.suser,password=self.spasswd,
-						binary_file=host['bin'],model=host['model'],
-						enable_password=self.senable, debug=self.debug)
-				if self.debug:
-					print('\n####tftp_setup####\n')
-				up.tftp_setup()
-				if self.debug:
-					print('\n####clean software#####')
-				up.cleansoftware()
-				if self.debug:
-					print('\n####tftp get#####')
-				up.tftp_getimage()
-				if self.debug:
-					print('\n#####software install####')
-				up.softwareinstall()
-				if self.debug:
-					print('\n####send reload####')
-				up.sendreload('no')
-				if self.debug:
-					print(up.log)
-
+				switch['session'].sendreload('yes')
 			except Exception as e:
 				traceback.print_exc()
 				if self.debug:
 					print('ERROR: ' + str(e))
 
 
+
+	def editswitchlist(self):
+		for index, switch in enumerate(self.switches):
+			print(str(index) + ': ' + switch['IPaddress'] + '\t'  + switch['hostname'])
+			r = -69
+		while r not in [''] + map(lambda (x,y): str(x), enumerate(self.switches)):
+			r = raw_input('Enter switch number to pop. leave empty to stop editing.')
+		if r and r.isdigit():
+			print(self.switches[int(r)]['IPaddress'] + ' was removed')
+			self.switches.pop(int(r))
+		
+
+
+	def __get_model__(self,switch):
+		# Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
+		# https://supportforums.cisco.com/discussion/9696971/which-oid-used-get-name-cisco-device-boot-image
+		# This doesn't show up in new devices, apparently...
+		# CISCO-ENHANCED-IMAGE-MIB
+		# IOS-XE: SNMPv2-SMI::enterprises.9.9.249.1.2.1.1.2.1000.1
+		#	or CISCO-ENHANCED-IMAGE-MIB::ceImage
+		# You can check if IOS-XE under the sysDescr.0 value
+		# CISCO-FLASH-MIB::ciscoFlashFileName
+		# C3560CG: ? SNMPv2-SMI::enterprises.9.9.10.1.1.4.2.1.1.5.1.1.1
+		modeloid = 'entPhysicalModelName'
+		imageoid  = u'sysDescr.0' #.1.3.6.1.2.1.16.19.6.0'
+		# filesoid = u'CISCO-FLASH-MIB::ciscoFlashFileName'
+		bootoid = u'SNMPv2-SMI::enterprises.9.2.1.73.0'
+		softimage_raw = snmp_get(bootoid, hostname=switch['IPaddress'],community=self.community,version=2).value
+		softimage = softimage_raw.split('/')[-1].lower()
+		if not softimage_raw:
+			softimage_raw = snmp_get(imageoid,hostname=switch['IPaddress'],community=self.community,version=2).value
+			#softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
+			#softimage = self.rm_nonalnum(softimage_raw)
+			# Is there a ##.#(##)EX in the string?
+			if re.findall(r'\d+\(.+?\)[eE]', softimage_raw):
+				t = softimage_raw
+				t = re.sub(r'\.','',t)
+				t = re.sub(r'\((?=\d)','-',t)
+				softimage_raw = re.sub(r'\)(?=\w+\d+)','.',t)
+				# Also remove the trailing '-m' in the reported image name
+			softimage = [re.sub(r'\-m$', '', x.lower()) for x in re.findall(r'(?<=Software \()[\w\d-]+(?=\))|(?<=Version )[\d\.\w-]+',softimage_raw)]
+		physical = snmp_walk(modeloid,hostname=switch['IPaddress'],community=self.community,version=2)
+		if len(physical[0].value) == 0:
+			del physical[0]
+		model = str(physical[0].value.split('-')[1])
+		print(model)
+		print(switch['IPaddress'],model,softimage)
+		if model not in self.firmwares.keys():
+			raise Exception('model' + model + 'not found in firmware list!')
+			#TODO: make a way to add firmware
+		if type(softimage) is unicode and softimage in self.firmwares[model].lower():
+			switch['model'] = model
+			switch['bin'] = self.firmwares[model]
+			print(switch['IPaddress'] + ' already on ' + switch['bin'])
+		elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
+			switch['model'] = model
+			switch['bin'] = self.firmwares[model]
+			print(switch['IPaddress'] + ' already on ' + switch['bin'])
+		else:
+			switch['model'] = model
+			switch['bin'] = self.firmwares[model]
+			self.upgrades.append(switch['IPaddress'])
+			print('upgrade ' + switch['IPaddress'] + ' to ' + switch['bin'])
+
+
+
+
+
+	def __get_new_name__(self,switch):
+		oid_index = []
+		for neighbor, ports in switch['neighbors'].iteritems():				
+			alias = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifAlias')
+			descr = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifDescr')
+			oid_index += [x.oid_index for x in descr if x.value in ports]
+		newname = ''
+		for i in oid_index:
+			try:
+				newname = alias[int(i) - 1].value.split()[0]
+				# newname = [x.value.split()[0] for x in alias if x.oid_index == i][0]
+				if newname:
+					if self.debug:
+						print(switch['hostname'], 'found new name:', newname)
+					switch['new name'] = newname
+					pass # TODO
+			except IndexError:
+				print(switch['hostname'], 'is not specified on any feedports!')		
+
+
+
+
+	def __get_serial__(self,switch):
+		#switch['serial'] = None
+		serialnum = ''
+		serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
+		if serialnum:
+			switch['serial'] = serialnum.value
+		print('serial number for ' + switch['IPaddress'] + ' is ' + switch['serial'])
+
+
+
+	def __ssh_opensession__(self,switch):
+		if self.debug:
+			print('staring ssh session for ' + switch['IPaddress'])
+		if not self.ping(switch['IPaddress']):
+			raise Exception('host not reachable')
+		if switch['model'].startswith('C38'):
+			switch['session'] = cup.c38XXUpgrade(host=switch['IPaddress'],tftpserver=self.tftp,
+				username=self.suser,password=self.spasswd,
+				binary_file=switch['bin'],
+				enable_password=self.senable, debug=self.debug)
+		elif switch['model'].startswith('C45'):
+			switch['session'] = cup.c45xxUpgrade(host=switch['IPaddress'],tftpserver=self.tftp,
+				username=self.suser,password=self.spasswd,
+				binary_file=switch['bin'],
+				enable_password=self.senable, debug=self.debug)
+		else:
+			print('Using default upgrade profile')
+			switch['session'] = cup.ciscoUpgrade(host=switch['IPaddress'],tftpserver=self.tftp,
+				username=self.suser,password=self.spasswd,
+				binary_file=switch['bin'],model=switch['model'],
+				enable_password=self.senable, debug=self.debug)	
+
+
+			#else:
+			#	try:
+			#		self.tftp_replace_conf(switch)
+			#	except Exception as e:
+			#		traceback.print_exc()
+
+
+	def __prepupgrade__(self,switch):
+		print('\ntry upgrade ', switch['IPaddress'],switch['model'],'\n')
+		if self.debug:
+			print('\n####tftp_setup####\n')
+		switch['session'].tftp_setup()
+		if self.debug:
+			print('\n####clean software#####')
+		switch['session'].cleansoftware()
+		if self.debug:
+			print('\n####tftp get#####')
+		switch['session'].tftp_getimage()
+		if self.debug:
+			print('\n#####software install####')
+		switch['session'].softwareinstall()
+
+
+
 	def generate_rsa(self):
-		for host in self.switches:
-			logfilename = os.path.abspath(os.path.join(self.output_dir, host['hostname'] + 'log.txt'))
+		for switch in self.switches:
+			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
 			try:
 				if self.debug:
-					print('connecting to host ' + host['hostname'])
+					print('connecting to host ' + switch['hostname'])
 				if self.pver3:
-					s = pexpect.spawnu('telnet ' + host['IPaddress'])
+					s = pexpect.spawnu('telnet ' + switch['IPaddress'])
 				else:
-					s = pexpect.spawn('telnet ' + host['IPaddress'])
+					s = pexpect.spawn('telnet ' + switch['IPaddress'])
 				s.timeout = self.telnettimeout
 				s.logfile = open(logfilename, "w")
 				s.expect('Username: ')
@@ -377,8 +522,8 @@ class Ciscoautoprovision:
 					keysize = '2048' # default if didnt split the output correctly
 				s.sendline(keysize)
 				if self.debug:
-					if '3750' in host['model'] and int(keysize) > 2048:
-						print('Next device is a', host['model'], '!')
+					if '3750' in switch['model'] and int(keysize) > 2048:
+						print('Next device is a', switch['model'], '!')
 					print("generating key of size " + keysize,end='')
 				for n in range(0,30):
 					if self.debug:
@@ -389,7 +534,7 @@ class Ciscoautoprovision:
 				# Though unlikely that we will ever use it, the 3750X takes
 				# over 400 seconds to generate an RSA key-pair with a 4096-bit
 				# modulus. We have to increase the timeout to accomodate for this! 
-				s.timeout = self.telnettimeout if not ('3750' in host['model'] and int(keysize) > 2048) else 600
+				s.timeout = self.telnettimeout if not ('3750' in switch['model'] and int(keysize) > 2048) else 600
 				s.expect('#')
 				s.logfile.close()
 				s.close()
@@ -410,22 +555,111 @@ class Ciscoautoprovision:
 					print(output)
 
 
-	def get_new_name(self):
-		for switch in self.switches:
-			oid_index = []
-			for neighbor, ports in switch['neighbors'].iteritems():
-				alias = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifAlias')
-				descr = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifDescr')
-				oid_index += [x.oid_index for x in descr if x.value in ports]
-			newname = ''
-			for i in oid_index:
-				try:
-					newname = alias[int(i) - 1].value.split()[0]
-					# newname = [x.value.split()[0] for x in alias if x.oid_index == i][0]
-					if newname:
-						if self.debug:
-							print(switch['hostname'], 'found new name:', newname)
-						switch['new name'] = newname
-						pass # TODO
-				except IndexError:
-					print(switch['hostname'], 'is not specified on any feedports!')
+
+
+	def __tftp_replace__(self,switch):
+		# try get null-serial#.conf config
+		trynewname = False
+		if 'serial' in switch.keys():
+			dir_prefix = '/autoprov'
+			filename = '/' + switch['serial'] + '-confg'
+			try:
+				self.__replacecfg__(switch=switch,remotefilename=str(dir_prefix + filename))
+			except Exception as e:
+				print(e)
+				trynewname = True
+		elif trynewname and 'new name' in switch.keys():
+			filename = '/' + switch['new name'] + '-conf'
+			try:
+				self.__replacecfg__(switch=switch,remotefilename=filename)
+			except:
+				raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
+		#except Exception as e:
+		#	print('this is just a normal exception')
+		#	print(e)
+
+
+	def __replacecfg__(self,switch,remotefilename,outputfile='./output/temp_config'):
+		try:
+			success = Helper('10.0.0.254').tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
+			if success:
+					with open(outputfile) as f:
+						switch['config'] = f.readlines()
+					switch['session'].tftp_replaceconf(remotefilename)
+			else:
+				print('could not find file '  + remotefilename)
+				raise Exception
+		except Exception as e:
+			traceback.print_exc()
+			print(e)	
+
+
+
+
+	def __tftp_startup__(self, switch):
+		# try get null-serial#.conf config
+		trynewname = False
+		if 'serial' in switch.keys():
+			dir_prefix = '/autoprov'
+			filename = '/' + switch['serial'] + '-confg'
+			try:
+				self.__startupcfg__(switch=switch,remotefilename=dir_prefix + filename)
+			except Exception as e:
+				traceback.print_exc()
+				print(e)
+				trynewname = True
+		elif trynewname and 'new name' in switch.keys():
+			filename = '/' + switch['new name'] + '-conf'
+			try:
+				self.__startupcfg__(switch=switch,remotefilename=filename)
+			except:
+				raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
+		#except Exception as e:
+		#	print('this is just a normal exception')
+		#	print(e)
+
+
+	def __startupcfg__(self,switch,remotefilename,outputfile='./output/temp_config'):
+		try:
+			success = Helper('10.0.0.254').tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
+			if success:
+					with open(outputfile) as f:
+						switch['config'] = f.readlines()
+					switch['session'].tftp_getstartup(remotefilename)
+			else:
+				print('could not find file '  + remotefilename)
+				raise Exception
+		except Exception as e:
+			traceback.print_exc()
+			print(e)			
+
+
+
+class Helper:
+	def __init__(self,tftp_server='10.0.0.254'):
+		if self._ping_(tftp_server):
+			self.server = tftp_server
+		else:
+			raise Exception('no response from server!')
+		self.client = tftpy.TftpClient(host=self.server, port=69)
+	
+	def _ping_(self,host):
+		ping_command = "ping -W1 -c 1 " + host + " > /dev/null 2>&1 "
+		response = os.system(ping_command)
+		#Note:response is 1 for fail; 0 for success;
+		return not response
+	
+	def tftp_putconf(self, inputfile, remotefilename):
+		self.client.upload(filename=remotefilename, input=inputfile)
+
+	def tftp_getconf(self, remotefilename, outputfile='./output/temp_config'):
+		try:
+			print(remotefilename + ' goes to \t' + outputfile)
+			self.client.download(filename=str(remotefilename),output=outputfile)
+			print('checkpoint 8')
+			return True
+		except tftpy.TftpShared.TftpException as t:
+			if 'File not found' in t.message:
+				print('could not find file tftp://' + self.server + remotefilename)
+				return False
+			print(t)
