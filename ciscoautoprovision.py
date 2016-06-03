@@ -508,9 +508,9 @@ class Ciscoautoprovision:
 		(out, err) = proc.communicate()
 		if err is not None or len(out) < 5:
 			raise Exception("Error generating public RSA key!")
-		public = [line + '\r' for line in out.split('\n')]
+		public = out.split('\n')[0:-1]
 		with open(temp.name, 'r+b') as f:
-			private = [line.replace('\n','\r') for line in f]
+			private = [line.strip() for line in f]
 		del temp
 		switch['rsa'] = {}
 		switch['rsa']['public'] = public
@@ -545,6 +545,8 @@ class Ciscoautoprovision:
 					s = pexpect.spawn('telnet ' + switch['IPaddress'])
 				s.timeout = self.telnettimeout
 				s.logfile = open(logfilename, "w")
+				if self.debug:
+					print('Opening telnet session...')
 				s.expect('Username: ')
 				s.sendline(self.suser)
 				s.expect('Password: ')
@@ -554,54 +556,59 @@ class Ciscoautoprovision:
 				s.expect('Password: ')
 				s.sendline(self.senable)
 				s.expect('#')
+				if self.debug:
+					print('Setting up environment...')
+				s.send('')
+				s.sendline('terminal length 0')
+				s.expect('#')
+				s.sendline('terminal width 0')
+				s.expect('#')
+				s.sendline('show crypto key mypubkey rsa')
+				s.expect('#')
+				keyout = s.before
+				s.send('')
 				s.sendline('config t')
 				s.expect('#')
-				s.sendline('crypto key generate rsa')
-				s.expect(']: ')
-				if 'yes' in s.before:
-					s.sendline('yes')
-					s.expect(']: ')
-				#get largest possible keysize
-				s.sendline('?')
-				s.expect(']: ')
-				keysize = s.before.split('.')[0].split()[-1]
-				if not keysize.isdigit():
-					keysize = '2048' # default if didnt split the output correctly
-				s.sendline(keysize)
-				if self.debug:
-					if '3750' in switch['model'] and int(keysize) > 2048:
-						print('Next device is a', switch['model'], '!')
-					print("generating key of size " + keysize,end='')
-				for n in range(0,30):
+				if 'name' in keyout:
 					if self.debug:
-						print('.',end='')
-					sleep(1)
+						print('Erasing all existing keys...')
+					s.sendline('crypto key zeroize rsa')
+					s.expect(']: ')
+					s.sendline('yes')
+					s.expect('#')
+				if not 'rsa' in switch.keys():
+					if self.debug:
+						print('Generating RSA key pair locally...')
+					self._genrsa(switch)
+				# `selfsigned` is the name we're giving to the pair, for now
+				s.sendline('crypto key import rsa selfsigned pem terminal ' + switch['rsa']['password'])
+				s.expect('itself.')
 				if self.debug:
-					print('.')
-				# Though unlikely that we will ever use it, the 3750X takes
-				# over 400 seconds to generate an RSA key-pair with a 4096-bit
-				# modulus. We have to increase the timeout to accomodate for this! 
-				s.timeout = self.telnettimeout if not ('3750' in switch['model'] and int(keysize) > 2048) else 600
+					print('Transferring public RSA key...')
+				for line in switch['rsa']['public']:
+					s.sendline(line)
+				s.sendline('quit')
+				s.expect('itself.')
+				if self.debug:
+					print('Transferring private RSA key...')
+				for line in switch['rsa']['private']:
+					s.sendline(line)
+				s.sendline('quit')
 				s.expect('#')
+				successful = True if 'Key pair import succeeded' in s.before else False
 				s.logfile.close()
 				s.close()
-				with open(logfilename, "r") as f:
-					output = f.read()
-				if not '[OK]' in  output:
+				if not successful:
 					if self.debug:
 						print(s.before)
-					raise Exception('did not exit rsa key generation correctly!')
+					raise Exception('RSA key was not imported successfully...')
 				else:
-					print('rsa key generated successfully!')
+					print('RSA key was imported successfully!')
 			except Exception as e:
+				print(e)
 				if self.debug:
-					print(e)
-				with open(logfilename, "r") as f:
-					output = f.read()
-				if self.debug:
-					print(output)
-
-
+					with open(logfilename, "r") as f:
+						print(f.read())
 
 
 	def __tftp_replace__(self,switch):
