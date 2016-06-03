@@ -328,8 +328,10 @@ class Ciscoautoprovision:
 					self._prepupgrade(switch)		
 					# reboot
 					switch['session'].sendreload('yes') # The correct argument may be no although it seemed to work
+					self._wait(switch['hostname'], timeout=600)
 				else:
 					self._tftp_replace(switch,time=15)
+					self._wait(switch['hostname'])
 				#continual ping 
 			except:
 				if self.debug:
@@ -786,6 +788,35 @@ class Ciscoautoprovision:
 			raise Exception('RSA key was not imported successfully...')
 		else:
 			print('RSA key was imported successfully!')
+
+
+	def _wait(self, target, cycle=5, timeout=300):
+		"""
+		Wait until the target is back online.
+		Sends a periodic ping to the target.
+
+		Keyword arguments:
+		target -- device hostname or IP address
+		cycle -- how long to wait between each ping, in seconds. Minimum is (and defaults to) 5
+		timeout -- total wait time, in seconds, before returning to the caller. Minimum is 30, defaults to 300
+		"""
+		attempts = 1
+		cycle = cycle if cycle > 5 else 5
+		timeout = timeout if timeout >= 30 else 300
+		retries = timeout / cycle
+		while timeout > 0:
+			if self.debug:
+				print("Sending ping", attempts, "of", retries)
+			if self.ping(target):
+				if self.debug:
+					print(target, "responded to ping!")
+				return True
+			sleep(cycle - 1) # Timeout is 1, so remove that from the overall wait
+			timeout -= cycle
+			attempts += 1
+		if self.debug:
+			print(target, "failed to come online")
+		return False
 
 
 
