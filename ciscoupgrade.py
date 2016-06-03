@@ -1,10 +1,28 @@
 from __future__ import print_function
+from __future__ import with_statement # Required in 2.5
 import paramiko
 import time
 import sys
 import os
+import signal
+from contextlib import contextmanager
+
 #import multiprocessing
 #from easysnmp import snmp_get, snmp_walk
+
+
+class TimeoutException(Exception): pass
+
+@contextmanager
+def time_limit(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutException, "Timed out!"
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
 
 
 class VerifyException(Exception):
@@ -150,18 +168,21 @@ class ciscoUpgrade:
 		if 'Error' in out:
 			raise Exception
 
-	def tftp_replaceconf(self,filename):
+	def tftp_replaceconf(self,timeout=17):
 		if self.debug:
-			print('replacing config file via tftp')
-		#configure replace tftp://10.0.0.254/autoprov/cap_c3850_config.conf  list force ignorecase
-		print('looking for file tftp://' + self.tftpserver + filename)
-		out = self._sendrecieve('configure replace tftp://' + self.tftpserver + filename + ' list force ignorecase\r','[OK',verbose=True)
-		print('####output####')
-		print(out)
-		#if '\%The input file is not a valid config file.' in out:
-		#	raise Exception
-		#if 'Error' in out:
-		#	raise Exception
+			print('replacing running config with startup')
+			#print('replacing config file via tftp')
+		try:
+			with time_limit(timeout):
+				self._sendrecieve('configure replace nvram:startup-config force ignorecase\r','#',verbose=True)		
+		except TimeoutException:
+			if self.debug:
+				print('\nconfigure replace successfully called!(probably)')
+				#print('\noutput:\n' + out)
+			return True
+		else:
+			raise Exception('configure replace was not successfull.')
+
 
 
 	def __exit__(self):

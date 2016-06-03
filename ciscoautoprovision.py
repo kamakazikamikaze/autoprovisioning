@@ -48,7 +48,7 @@ def generate_config(filename='autoProv.confg'):
 		'switch password': 'l4y3r2',
 		'switch enable': 'p4thw4y',
 		'tftp server': '10.0.0.254',
-		'telnet timeout': 90,
+		'telnet timeout': 20,
 		'production rwcommunity' : ''
 	}
 	with open('./cfg/' + filename, 'w') as dc:
@@ -116,7 +116,7 @@ class Ciscoautoprovision:
 			if data['tftp server']:
 				self.tftp = data['tftp server']
 			self._rsa_pass_size = 32 if not 'rsa pass size' in data.keys() else data['rsa pass size']
-			if int(data['telnet timeout']) < 30:
+			if int(data['telnet timeout']) < 5:
 				raise Exception('telnet timeout must be greater than 30 seconds')
 			else:
 				self.telnettimeout = int(data['telnet timeout'])
@@ -238,13 +238,22 @@ class Ciscoautoprovision:
 	def get_information(self):
 		for switch in self.switches:
 			try:
-				self.__get_model__(switch)
-				self.__get_new_name__(switch)
-				self.__get_serial__(switch)
-			except EasySNMPTimeoutError:
-				print(switch['IPaddress'] + ' timed out.')
-				print('removing ' + switch['IPaddress'] + ' from switch list.')
-				self.switches.pop(self.switches.index(switch))
+				if self.debug:
+					print('\n' + switch['IPaddress'] + '\t'  + switch['hostname'])
+				try:
+					self._get_model(switch)
+					self._get_serial(switch)
+				except EasySNMPTimeoutError:
+					if self.debug:
+						traceback.print_exc()
+					print(switch['IPaddress'] + ' timed out.')
+					print('removing ' + switch['IPaddress'] + ' from switch list.')
+					self.switches.pop(self.switches.index(switch))
+					continue
+				try:
+					self._get_new_name(switch)
+				except EasySNMPTimeoutError:
+					print('could not access neighbor switch')
 			except Exception:
 				if self.debug:
 					print('error retrieving switch information from ' + switch['IP'])
@@ -254,7 +263,7 @@ class Ciscoautoprovision:
 	def get_model(self):
 		for switch in self.switches:
 			try:
-				self.__get_model__(switch)
+				self._get_model(switch)
 			except EasySNMPTimeoutError:
 				print(switch['IPaddress'] + ' timed out.')
 				print('removing ' + switch['IPaddress'] + ' from switch list.')
@@ -267,7 +276,7 @@ class Ciscoautoprovision:
 	def get_new_name(self):
 		for switch in self.switches:
 			try:
-				self.__get_new_name__(switch)
+				self._get_new_name(switch)
 			except:
 				if self.debug:
 					print('Could not get new name for ' + switch['IPaddress'])
@@ -287,12 +296,50 @@ class Ciscoautoprovision:
 					traceback.print_exc()
 
 
+	def autoupgrade(self):
+		for switch in self.switches:
+			try:
+				# get information
+				if self.debug:
+					print('\n' + switch['IPaddress'] + '\t'  + switch['hostname'])
+				try:
+					self._get_model(switch)
+					self._get_serial(switch)
+				except EasySNMPTimeoutError:
+					if self.debug:
+						print(switch['IPaddress'] + ' timed out.')
+						print('removing ' + switch['IPaddress'] + ' from switch list.')
+					self.switches.pop(self.switches.index(switch))
+					continue
+				try:
+					self._get_new_name(switch)
+				except EasySNMPTimeoutError:
+					if self.debug:
+						print('could not access neighbor switch')
+				#generate RSA keys
+				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
+				self._gen_rsa(switch,logfilename=logfilename)
+				# open ssh session
+				self._ssh_opensession(switch)
+				# tftpget startup config && get new IP
+				self._tftp_startup()
+				if switch['IPaddress'] in self.upgrades:
+					# prep upgrade
+					self._prepupgrade(switch)		
+					# reboot
+					switch['session'].sendreload('yes') # The correct argument may be no although it seemed to work
+				else:
+					self._tftp_replace(switch,time=15)
+				#continual ping 
+			except:
+				if self.debug:
+					traceback.print_exc()
 
 
 	def ssh_opensession(self):
 		for switch in self.switches:
 			try:
-				self.__ssh_opensession__(switch)
+				self._ssh_opensession(switch)
 			except Exception as e:
 				print(e)
 				if self.debug:
@@ -303,7 +350,7 @@ class Ciscoautoprovision:
 		for switch in self.switches:
 			if switch['IPaddress'] in self.upgrades:
 				try:
-					self.__prepupgrade__(switch)
+					self._prepupgrade(switch)
 				except Exception as e:
 					print(e)
 					traceback.print_exc()
@@ -313,7 +360,7 @@ class Ciscoautoprovision:
 		for switch in self.switches:
 			if switch['IPaddress'] not in self.upgrades:
 				try:
-					self.__tftp_replace__(switch)
+					self._tftp_replace(switch,time=17)
 				except Exception as e:
 					traceback.print_exc()
 					if self.debug:
@@ -321,14 +368,22 @@ class Ciscoautoprovision:
 
 
 	def tftp_startup(self):
+		'''trys to pull a configuration from the given tftp server. the tftp_startup will first
+		try and get a config based on the serial number in a serialnum-conf format in the tftpboot/autoprov/ folder
+		if that fails then it checks in the base /tftpboot/ folder for a config that is the same as the feedport description 
+		and in the event that fails it will look in the /tftpboot/ folder for a model specific base config. 
+		 '''
 		for switch in self.switches:
-			if switch['IPaddress'] in self.upgrades:
+			#if switch['IPaddress'] in self.upgrades:
 				try:
-					self.__tftp_startup__(switch)
+					print('\n## ' + switch['IPaddress'] + '\n')
+					self._tftp_startup(switch)
+					print('Config transfered successfully!')
 				except Exception as e:
-					traceback.print_exc()
-					if self.debug:
-						print('ERROR: ' + str(e))
+					print(e)
+					#traceback.print_exc()
+					#if self.debug:
+					#	print('ERROR: ' + str(e))
 
 	
 	def reboot_save(self):
@@ -336,9 +391,21 @@ class Ciscoautoprovision:
 			try:
 				switch['session'].sendreload('yes')
 			except Exception as e:
-				traceback.print_exc()
+				#traceback.print_exc()
 				if self.debug:
 					print('ERROR: ' + str(e))
+
+
+	def generate_rsa(self):
+		for switch in self.switches:
+			try:
+				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
+				self._gen_rsa(switch,logfilename=logfilename)
+			except Exception as e:
+				print(e)
+				if self.debug:
+					with open(logfilename, "r") as f:
+						print(f.read())
 
 
 
@@ -354,7 +421,7 @@ class Ciscoautoprovision:
 		
 
 
-	def __get_model__(self,switch):
+	def _get_model(self,switch):
 		# Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
 		# https://supportforums.cisco.com/discussion/9696971/which-oid-used-get-name-cisco-device-boot-image
 		# This doesn't show up in new devices, apparently...
@@ -386,30 +453,33 @@ class Ciscoautoprovision:
 		if len(physical[0].value) == 0:
 			del physical[0]
 		model = str(physical[0].value.split('-')[1])
-		print(model)
-		print(switch['IPaddress'],model,softimage)
+		#print(model)
+		#print(switch['IPaddress'],model,softimage)
 		if model not in self.firmwares.keys():
 			raise Exception('model' + model + 'not found in firmware list!')
 			#TODO: make a way to add firmware
 		if type(softimage) is unicode and softimage in self.firmwares[model].lower():
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
-			print(switch['IPaddress'] + ' already on ' + switch['bin'])
+			if self.debug:
+				print('upgrade:\tNO, ' + switch['IPaddress'] + ' already on ' + switch['bin'])
 		elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
-			print(switch['IPaddress'] + ' already on ' + switch['bin'])
+			if self.debug:
+				print('upgrade:\tNO, ' + switch['IPaddress'] + ' already on ' + switch['bin'])
 		else:
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			self.upgrades.append(switch['IPaddress'])
-			print('upgrade ' + switch['IPaddress'] + ' to ' + switch['bin'])
+			if self.debug:
+				print('upgrade:\tyes,' + switch['IPaddress'] + ' to ' + switch['bin'])
 
 
 
 
 
-	def __get_new_name__(self,switch):
+	def _get_new_name(self,switch):
 		oid_index = []
 		for neighbor, ports in switch['neighbors'].iteritems():				
 			alias = snmp_walk(hostname=neighbor, version=2, community=self.prodcommunity, oids='IF-MIB::ifAlias')
@@ -422,7 +492,7 @@ class Ciscoautoprovision:
 				# newname = [x.value.split()[0] for x in alias if x.oid_index == i][0]
 				if newname:
 					if self.debug:
-						print(switch['hostname'], 'found new name:', newname)
+						print('New Name:\t' + newname + ' found for '  + switch['hostname'])
 					switch['new name'] = newname
 					pass # TODO
 			except IndexError:
@@ -431,17 +501,17 @@ class Ciscoautoprovision:
 
 
 
-	def __get_serial__(self,switch):
+	def _get_serial(self,switch):
 		#switch['serial'] = None
 		serialnum = ''
 		serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
 		if serialnum:
 			switch['serial'] = serialnum.value
-		print('serial number for ' + switch['IPaddress'] + ' is ' + switch['serial'])
+		print('serial num:\t' + switch['IPaddress'] + ' is ' + switch['serial'])
 
 
 
-	def __ssh_opensession__(self,switch):
+	def _ssh_opensession(self,switch):
 		if self.debug:
 			print('staring ssh session for ' + switch['IPaddress'])
 		if not self.ping(switch['IPaddress']):
@@ -471,7 +541,7 @@ class Ciscoautoprovision:
 			#		traceback.print_exc()
 
 
-	def __prepupgrade__(self,switch):
+	def _prepupgrade(self,switch):
 		print('\ntry upgrade ', switch['IPaddress'],switch['model'],'\n')
 		if self.debug:
 			print('\n####tftp_setup####\n')
@@ -533,159 +603,189 @@ class Ciscoautoprovision:
 		return ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(size))
 
 
-	def generate_rsa(self):
-		for switch in self.switches:
-			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
-			try:
-				if self.debug:
-					print('connecting to host ' + switch['hostname'])
-				if self.pver3:
-					s = pexpect.spawnu('telnet ' + switch['IPaddress'])
-				else:
-					s = pexpect.spawn('telnet ' + switch['IPaddress'])
-				s.timeout = self.telnettimeout
-				s.logfile = open(logfilename, "w")
-				if self.debug:
-					print('Opening telnet session...')
-				s.expect('Username: ')
-				s.sendline(self.suser)
-				s.expect('Password: ')
-				s.sendline(self.spasswd)
-				s.expect('>')
-				s.sendline('enable')
-				s.expect('Password: ')
-				s.sendline(self.senable)
-				s.expect('#')
-				if self.debug:
-					print('Setting up environment...')
-				s.send('')
-				s.sendline('terminal length 0')
-				s.expect('#')
-				s.sendline('terminal width 0')
-				s.expect('#')
-				s.sendline('show crypto key mypubkey rsa')
-				s.expect('#')
-				keyout = s.before
-				s.send('')
-				s.sendline('config t')
-				s.expect('#')
-				if 'name' in keyout:
-					if self.debug:
-						print('Erasing all existing keys...')
-					s.sendline('crypto key zeroize rsa')
-					s.expect(']: ')
-					s.sendline('yes')
-					s.expect('#')
-				if not 'rsa' in switch.keys():
-					if self.debug:
-						print('Generating RSA key pair locally...')
-					self._genrsa(switch)
-				# `selfsigned` is the name we're giving to the pair, for now
-				s.sendline('crypto key import rsa selfsigned pem terminal ' + switch['rsa']['password'])
-				s.expect('itself.')
-				if self.debug:
-					print('Transferring public RSA key...')
-				for line in switch['rsa']['public']:
-					s.sendline(line)
-				s.sendline('quit')
-				s.expect('itself.')
-				if self.debug:
-					print('Transferring private RSA key...')
-				for line in switch['rsa']['private']:
-					s.sendline(line)
-				s.sendline('quit')
-				s.expect('#')
-				successful = True if 'Key pair import succeeded' in s.before else False
-				s.logfile.close()
-				s.close()
-				if not successful:
-					if self.debug:
-						print(s.before)
-					raise Exception('RSA key was not imported successfully...')
-				else:
-					print('RSA key was imported successfully!')
-			except Exception as e:
-				print(e)
-				if self.debug:
-					with open(logfilename, "r") as f:
-						print(f.read())
 
 
-	def __tftp_replace__(self,switch):
+	def _tftp_replace(self,switch,time):
+			if 'new IPaddress' in switch.keys():
+				switch['session'].tftp_replaceconf(timeout=time)
+			else:
+				print(switch['IPaddress'] + ' does not have a config file to configure replace!')
+			del switch['session']
+
 		# try get null-serial#.conf config
-		trynewname = False
-		if 'serial' in switch.keys():
+		#trynewname = False
+		#if 'serial' in switch.keys():
+		#	dir_prefix = '/autoprov'
+		#	filename = '/' + switch['serial'] + '-confg'
+		#	try:
+		#		self.__tftp_replacecfg__(switch=switch,remotefilename=str(dir_prefix + filename))
+		#	except Exception as e:
+		#		print(e)
+		#		trynewname = True
+		#elif trynewname and 'new name' in switch.keys():
+		#	filename = '/' + switch['new name'] + '-conf'
+		#	try:
+		#		self.__tftp_replacecfg__(switch=switch,remotefilename=filename)
+		#	except:
+		#		raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
+		##except Exception as e:
+		#	print('this is just a normal exception')
+		#	print(e)
+
+
+	#def __tftp_replacecfg__(self,switch,time=17):
+	#		r = switch['session'].tftp_replaceconf(timeout=time)
+	#		if r:
+	#			del switch['session'] 
+
+
+	#	try:
+	#		success = Helper(self.tftp).tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
+	#		if success:
+	#				with open(outputfile) as f:
+	#					switch['config'] = f.read()
+	#				switch['session'].tftp_replaceconf(remotefilename)
+	#		else:
+	#			print('could not find file '  + remotefilename)
+	#			raise Exception
+	#	except Exception as e:
+	#		traceback.print_exc()
+	#		print(e)	
+
+
+
+
+	def _tftp_startup(self, switch):
+		# try get null-serial#.conf config
+		found_config = False
+		if not found_config and 'serial' in switch.keys():
+			if self.debug:
+				print('searching for serial config')
 			dir_prefix = '/autoprov'
 			filename = '/' + switch['serial'] + '-confg'
-			try:
-				self.__replacecfg__(switch=switch,remotefilename=str(dir_prefix + filename))
-			except Exception as e:
-				print(e)
-				trynewname = True
-		elif trynewname and 'new name' in switch.keys():
-			filename = '/' + switch['new name'] + '-conf'
-			try:
-				self.__replacecfg__(switch=switch,remotefilename=filename)
-			except:
-				raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
+			found_config = self._startupcfg(switch=switch,remotefilename=dir_prefix + filename)
+		if not found_config and 'new name' in switch.keys():
+			if self.debug:
+				print('searching for cdp desc config')
+			filename = '/' + switch['new name'] + '-confg'
+			found_config = self._startupcfg(switch=switch,remotefilename=filename)
+		if not found_config:
+			#print('get config via model and give it a unique hostname.')
+			if self.debug:
+				print('searching for cap model specific config')
+			dir_prefix = '/autoprov'
+			filename = '/cap' + switch['model'] + '-confg'
+			found_config = self._startupcfg(switch=switch,remotefilename=filename)
+		if not found_config:
+			raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
+
+
+
+#if self.debug and found_config:
+			#	print('serial config copied to startup-confg successfully!')
+			#elif not found_config: 
+			#	if self.debug:
+			#		print('could not find configuration by serial number!')
+
+
+
+
+
+
+
 		#except Exception as e:
 		#	print('this is just a normal exception')
 		#	print(e)
 
 
-	def __replacecfg__(self,switch,remotefilename,outputfile='./output/temp_config'):
-		try:
-			success = Helper('10.0.0.254').tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
-			if success:
-					with open(outputfile) as f:
-						switch['config'] = f.readlines()
-					switch['session'].tftp_replaceconf(remotefilename)
-			else:
-				print('could not find file '  + remotefilename)
-				raise Exception
-		except Exception as e:
-			traceback.print_exc()
-			print(e)	
-
-
-
-
-	def __tftp_startup__(self, switch):
-		# try get null-serial#.conf config
-		trynewname = False
-		if 'serial' in switch.keys():
-			dir_prefix = '/autoprov'
-			filename = '/' + switch['serial'] + '-confg'
-			try:
-				self.__startupcfg__(switch=switch,remotefilename=dir_prefix + filename)
-			except Exception as e:
-				traceback.print_exc()
-				print(e)
-				trynewname = True
-		elif trynewname and 'new name' in switch.keys():
-			filename = '/' + switch['new name'] + '-conf'
-			try:
-				self.__startupcfg__(switch=switch,remotefilename=filename)
-			except:
-				raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
+	def _startupcfg(self,switch,remotefilename,outputfile='./output/temp_config'):
+		#try:
+		success = Helper(self.tftp).tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
+		if success:
+				with open(outputfile,'r+b') as f:
+					log = mmap.mmap(f.fileno(), 0)
+				results = re.findall(r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s(?:\d{1,3}\.){3}\d{1,3})', log)
+				switch['new IPaddress'] = map(lambda (g0,g1): g1, results)
+				log.close()
+				if self.debug:
+					print('new ip address information: ' + str(results))
+				switch['session'].tftp_getstartup(remotefilename)
+		return success
+				#raise Exception
 		#except Exception as e:
-		#	print('this is just a normal exception')
-		#	print(e)
+		#	traceback.print_exc()
+		#	print(e)			
 
 
-	def __startupcfg__(self,switch,remotefilename,outputfile='./output/temp_config'):
-		try:
-			success = Helper('10.0.0.254').tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
-			if success:
-					with open(outputfile) as f:
-						switch['config'] = f.readlines()
-					switch['session'].tftp_getstartup(remotefilename)
-			else:
-				print('could not find file '  + remotefilename)
-				raise Exception
-		except Exception as e:
-			traceback.print_exc()
-			print(e)			
+	def _gen_rsa(self,switch,logfilename):
+		
+		if self.debug:
+			print('connecting to host ' + switch['hostname'])
+		if self.pver3:
+			s = pexpect.spawnu('telnet ' + switch['IPaddress'])
+		else:
+			s = pexpect.spawn('telnet ' + switch['IPaddress'])
+		s.timeout = self.telnettimeout
+		s.logfile = open(logfilename, "w")
+		if self.debug:
+			print('Opening telnet session...')
+		s.expect('Username: ')
+		s.sendline(self.suser)
+		s.expect('Password: ')
+		s.sendline(self.spasswd)
+		s.expect('>')
+		s.sendline('enable')
+		s.expect('Password: ')
+		s.sendline(self.senable)
+		s.expect('#')
+		if self.debug:
+			print('Setting up environment...')
+		s.send('')
+		s.sendline('terminal length 0')
+		s.expect('#')
+		s.sendline('terminal width 0')
+		s.expect('#')
+		s.sendline('show crypto key mypubkey rsa')
+		s.expect('#')
+		keyout = s.before
+		s.send('')
+		s.sendline('config t')
+		s.expect('#')
+		if 'name' in keyout:
+			if self.debug:
+				print('Erasing all existing keys...')
+			s.sendline('crypto key zeroize rsa')
+			s.expect(']: ')
+			s.sendline('yes')
+			s.expect('#')
+		if not 'rsa' in switch.keys():
+			if self.debug:
+				print('Generating RSA key pair locally...')
+			self._genrsa(switch)
+		# `selfsigned` is the name we're giving to the pair, for now
+		s.sendline('crypto key import rsa selfsigned pem terminal ' + switch['rsa']['password'])
+		s.expect('itself.')
+		if self.debug:
+			print('Transferring public RSA key...')
+		for line in switch['rsa']['public']:
+			s.sendline(line)
+		s.sendline('quit')
+		s.expect('itself.')
+		if self.debug:
+			print('Transferring private RSA key...')
+		for line in switch['rsa']['private']:
+			s.sendline(line)
+		s.sendline('quit')
+		s.expect('#')
+		successful = True if 'Key pair import succeeded' in s.before else False
+		s.logfile.close()
+		s.close()
+		if not successful:
+			if self.debug:
+				print(s.before)
+			raise Exception('RSA key was not imported successfully...')
+		else:
+			print('RSA key was imported successfully!')
 
 
 
@@ -707,13 +807,11 @@ class Helper:
 		self.client.upload(filename=remotefilename, input=inputfile)
 
 	def tftp_getconf(self, remotefilename, outputfile='./output/temp_config'):
+		'''returns true or false depending on whether tftpget was successfull or not'''
 		try:
-			print(remotefilename + ' goes to \t' + outputfile)
 			self.client.download(filename=str(remotefilename),output=outputfile)
-			print('checkpoint 8')
 			return True
-		except tftpy.TftpShared.TftpException as t:
-			if 'File not found' in t.message:
-				print('could not find file tftp://' + self.server + remotefilename)
-				return False
-			print(t)
+		except tftpy.TftpShared.TftpException: # as t:
+			#if 'File not found' in t.message:
+				#pass	
+			return False
