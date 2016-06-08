@@ -234,6 +234,7 @@ class Ciscoautoprovision:
 
 
 	def get_information(self):
+		to_pop = []
 		for switch in self.switches:
 			try:
 				if self.debug:
@@ -243,10 +244,9 @@ class Ciscoautoprovision:
 					self._get_serial(switch)
 				except EasySNMPTimeoutError:
 					if self.debug:
-						traceback.print_exc()
 					print(switch['IPaddress'] + ' timed out.')
-					print('removing ' + switch['IPaddress'] + ' from switch list.')
-					self.switches.pop(self.switches.index(switch))
+						to_pop.append(switch)
+						#	traceback.print_exc()
 					continue
 				try:
 					self._get_new_name(switch)
@@ -255,20 +255,32 @@ class Ciscoautoprovision:
 			except Exception:
 				if self.debug:
 					print('error retrieving switch information from ' + switch['IP'])
-					traceback.print_exc()
+					#traceback.print_exc()
+		for s in to_pop:
+			print('removing ' + switch['IPaddress'] + ' from switch list.')
+			self.switches.pop(self.switches.index(s))
+
 
 
 	def get_model(self):
+		#to_pop = []
 		for switch in self.switches:
 			try:
+				print('switch: ' + switch['IPaddress'])
 				self._get_model(switch)
-			except EasySNMPTimeoutError:
-				print(switch['IPaddress'] + ' timed out.')
-				print('removing ' + switch['IPaddress'] + ' from switch list.')
-				self.switches.pop(self.switches.index(switch))
+			#except Exception:
+			#	print(switch['IPaddress'] + ' timed out.')
+			#	print('removing ' + switch['IPaddress'] + ' from switch list.')
+			#	self.switches.pop(self.switches.index(switch))
 			except Exception as e:
-				traceback.print_exc()
 				print(e)
+				print(switch['IPaddress'] + ' timed out.')
+				#print('removing ' + switch['IPaddress'] + ' from switch list.')
+				#topop.append(self.switches.index(switch))
+		#print(topop)
+		#for s in topop:
+		#	self.switches.pop(s)
+				#traceback.print_exc()
 		
 
 	def get_new_name(self):
@@ -305,9 +317,8 @@ class Ciscoautoprovision:
 					self._get_serial(switch)
 				except EasySNMPTimeoutError:
 					if self.debug:
-						print(switch['IPaddress'], ' timed out.')
-						print('removing', switch['IPaddress'], 'from switch list.')
-					self.switches.pop(self.switches.index(switch))
+						#print('removing ' + switch['IPaddress'] + ' from switch list.')
+
 					continue
 				try:
 					self._get_new_name(switch)
@@ -319,8 +330,7 @@ class Ciscoautoprovision:
 				self._gen_rsa(switch,logfilename=logfilename)
 				# open ssh session
 				self._ssh_opensession(switch)
-				# tftpget startup config && get new IP
-				if switch['IPaddress'] in self.upgrades:
+				self._tftp_startup()				if switch['IPaddress'] in self.upgrades:
 					# In order for the reboot to upgrade the device,
 					# the running configuration must be saved. Therefore
 					# the running-config should be overwritten with the 
@@ -339,7 +349,6 @@ class Ciscoautoprovision:
 					# 	self._ssh_opensession(switch)
 					# prep upgrade
 					self._prepupgrade(switch)
-					self._tftp_startup(switch)
 					# reboot
 					switch['session'].sendreload('no')
 					# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
@@ -349,9 +358,11 @@ class Ciscoautoprovision:
 					self._tftp_replace(switch,time=15)
 					self._wait(switch['new IPaddress'])
 				#continual ping
-			except:
-				if self.debug:
-					traceback.print_exc()
+			except Exception as e:
+				print(e)
+
+				#if self.debug:
+					#traceback.print_exc()
 
 
 	def ssh_opensession(self):
@@ -380,7 +391,7 @@ class Ciscoautoprovision:
 				try:
 					self._tftp_replace(switch,time=17)
 				except Exception as e:
-					traceback.print_exc()
+					#traceback.print_exc()
 					if self.debug:
 						print('ERROR: ' + str(e))
 
@@ -407,7 +418,7 @@ class Ciscoautoprovision:
 	def reboot_save(self):
 		for switch in self.switches:
 			try:
-				switch['session'].sendreload('yes')
+				switch['session'].sendreload('no')
 			except Exception as e:
 				#traceback.print_exc()
 				if self.debug:

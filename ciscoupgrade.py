@@ -94,24 +94,10 @@ class ciscoUpgrade:
 
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
-		# 
-		bootfile_raw = self._sendrecieve('show boot \r','#',verbose=True)
-		bf = [x for x in bootfile_raw.split() if 'flash' in x][0].split(',')[0]
-		print(bf)
-		if len(bf.split('/')) > 2:
-			os_folder = '/'.join(bf.split('/')[0:-1])
-			self._sendrecieve('delete  /force /recursive ' + os_folder + ' \r' ,'#')
-			#print('\n\n')
-			#print('os_folder:', os_folder)
-		else:
-
-			self._sendrecieve('delete  /force ' + bf + '\r' ,'#')
-		#delete /force /recursive flash
-		#	current_file_systems = [x.split('.bin') for x in out.split() if '.bin' in x]
-		#for ios in current_file_systems:
+		self._sendrecieve('delete  /force /recursive flash:* \r' ,'#')
+		self._sendrecieve('\r','#')
 		
-		#self._sendrecieve('\r','#')
-
+		
 	def tftp_getimage(self):
 		'''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
 
@@ -137,7 +123,11 @@ class ciscoUpgrade:
 
 	def softwareinstall(self):
 		self._sendrecieve('config t\r', '#')
-		self._sendrecieve('boot system switch all flash:/' + self.bin + '\r','#',verbose=True)
+		out = self._sendrecieve('boot system ?\r','#',verbose=True)
+		if 'switch' in out:
+			self._sendrecieve('boot system switch all flash:/' + self.bin + '\r','#',verbose=True)
+		else:
+			self._sendrecieve('boot system flash:' + self.bin + '\r','#',verbose=True)
 		self._sendrecieve('end\r','#')
 
 	def writemem(self, end=False):
@@ -195,11 +185,9 @@ class c38XXUpgrade(ciscoUpgrade):
 	
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
-		# self._sendrecieve('software clean file flash:\r' ,'#')
-		self._sendrecieve('delete /force /recursive flash: \r', '#', verbose=False)
+		self._sendrecieve('delete /force /recursive flash:* \r', '#', verbose=False)
 
-
-	def softwareinstall(self,iOS_TimingFlag = "on-reboot"):
+	def Softwareinstall(self,iOS_TimingFlag = "on-reboot"):		
 		''' prepares and tells the switch to upgrade "on-reboot" by default'''
 		# For whatever asinine reason, Cisco requires a complete reload of the
 		# system if it is operating in BUNDLE mode so you can use the `software
@@ -252,23 +240,13 @@ class c45xxUpgrade(ciscoUpgrade):
 
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
-		# 
-		bootfile_raw = self._sendrecieve('show bootvar \r','#',verbose=True)
-		bf = [x for x in bootfile_raw.split() if 'flash' in x][0].split(',')[0]
-		bf.split('.bin')[0] + '.bin'
-		if self.debug:
-			print(bf)
-		if len(bf.split('/')) > 2:
-			os_folder = '/'.join(bf.split('/')[0:-1])
-			self._sendrecieve('delete  /force /recursive ' + os_folder + ' \r' ,'#')
-			#print('\n\n')
-			#print('os_folder:', os_folder)
-		else:
-			self._sendrecieve('delete  /force ' + bf + '\r' ,'#')
+		self._sendrecieve('delete  /recursive bootflash:*\r','?',verbose=True)
+		self._sendrecieve('\r','#',verbose=True)
 	
 	def softwareinstall(self):
 		self._sendrecieve('config t\r', '#')
 		self._sendrecieve('boot system flash bootflash:/' + self.bin + ' \r','#',verbose=True)
 		self._sendrecieve('end\r','#')
-		# ciscoUpgrade._sendrecieve(self,'write memory\r','#')
+		self._sendrecieve('write memory\r','#')
+
 
