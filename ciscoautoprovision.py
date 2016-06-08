@@ -81,6 +81,7 @@ class Ciscoautoprovision:
 		else:
 			self.passwd = password
 
+
 	def ping(self,host):
 		ping_command = "ping -W1 -c 1 " + host + " > /dev/null 2>&1 "
 		response = os.system(ping_command)
@@ -232,9 +233,6 @@ class Ciscoautoprovision:
 			print(e)
 
 
-	#def rm_nonalnum(self,string):
-	#	return ''.join(map(lambda x: x if x.isalnum() else '',string))
-
 	def get_information(self):
 		for switch in self.switches:
 			try:
@@ -301,14 +299,14 @@ class Ciscoautoprovision:
 			try:
 				# get information
 				if self.debug:
-					print('\n' + switch['IPaddress'] + '\t'  + switch['hostname'])
+					print('\n', switch['IPaddress'], '\t', switch['hostname'])
 				try:
 					self._get_model(switch)
 					self._get_serial(switch)
 				except EasySNMPTimeoutError:
 					if self.debug:
-						print(switch['IPaddress'] + ' timed out.')
-						print('removing ' + switch['IPaddress'] + ' from switch list.')
+						print(switch['IPaddress'], ' timed out.')
+						print('removing', switch['IPaddress'], 'from switch list.')
 					self.switches.pop(self.switches.index(switch))
 					continue
 				try:
@@ -322,17 +320,35 @@ class Ciscoautoprovision:
 				# open ssh session
 				self._ssh_opensession(switch)
 				# tftpget startup config && get new IP
-				self._tftp_startup()
 				if switch['IPaddress'] in self.upgrades:
+					# In order for the reboot to upgrade the device,
+					# the running configuration must be saved. Therefore
+					# the running-config should be overwritten with the 
+					# to-be/startup-config, set the target boot image,
+					# then save changes after applying the reboot command
+					# self._tftp_replace(switch,time=15)
+					# SSH session was deleted. Check for a new IP address
+					# and open another one using that.
+					# if 'new IPaddress' in switch.keys():
+					# 	switch['old IPaddress'] = switch['IPaddress']
+					# 	switch['IPaddress'] = switch['new IPaddress'][0]
+					# 	if self.debug:
+					# 		print('Waiting to create SSH session for device\'s new IP...')
+					# 	if not self._wait(switch['IPaddress'], timeout=300):
+					# 		raise Exception('Device did not come back up with new IP address!')
+					# 	self._ssh_opensession(switch)
 					# prep upgrade
-					self._prepupgrade(switch)		
+					self._prepupgrade(switch)
+					self._tftp_startup(switch)
 					# reboot
-					switch['session'].sendreload('yes') # The correct argument may be no although it seemed to work
-					self._wait(switch['hostname'], timeout=600)
+					switch['session'].sendreload('no')
+					# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
+					self._wait(switch['new IPaddress'], timeout=1200)
 				else:
+					self._tftp_startup(switch)
 					self._tftp_replace(switch,time=15)
-					self._wait(switch['hostname'])
-				#continual ping 
+					self._wait(switch['new IPaddress'])
+				#continual ping
 			except:
 				if self.debug:
 					traceback.print_exc()
@@ -410,7 +426,6 @@ class Ciscoautoprovision:
 						print(f.read())
 
 
-
 	def editswitchlist(self):
 		for index, switch in enumerate(self.switches):
 			print(str(index) + ': ' + switch['IPaddress'] + '\t'  + switch['hostname'])
@@ -421,7 +436,6 @@ class Ciscoautoprovision:
 			print(self.switches[int(r)]['IPaddress'] + ' was removed')
 			self.switches.pop(int(r))
 		
-
 
 	def _get_model(self,switch):
 		# Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
@@ -478,9 +492,6 @@ class Ciscoautoprovision:
 				print('upgrade:\tyes,' + switch['IPaddress'] + ' to ' + switch['bin'])
 
 
-
-
-
 	def _get_new_name(self,switch):
 		oid_index = []
 		for neighbor, ports in switch['neighbors'].iteritems():				
@@ -501,8 +512,6 @@ class Ciscoautoprovision:
 				print(switch['hostname'], 'is not specified on any feedports!')		
 
 
-
-
 	def _get_serial(self,switch):
 		#switch['serial'] = None
 		serialnum = ''
@@ -510,7 +519,6 @@ class Ciscoautoprovision:
 		if serialnum:
 			switch['serial'] = serialnum.value
 		print('serial num:\t' + switch['IPaddress'] + ' is ' + switch['serial'])
-
 
 
 	def _ssh_opensession(self,switch):
@@ -534,13 +542,6 @@ class Ciscoautoprovision:
 				username=self.suser,password=self.spasswd,
 				binary_file=switch['bin'],model=switch['model'],
 				enable_password=self.senable, debug=self.debug)	
-
-
-			#else:
-			#	try:
-			#		self.tftp_replace_conf(switch)
-			#	except Exception as e:
-			#		traceback.print_exc()
 
 
 	def _prepupgrade(self,switch):
@@ -614,48 +615,6 @@ class Ciscoautoprovision:
 				print(switch['IPaddress'] + ' does not have a config file to configure replace!')
 			del switch['session']
 
-		# try get null-serial#.conf config
-		#trynewname = False
-		#if 'serial' in switch.keys():
-		#	dir_prefix = '/autoprov'
-		#	filename = '/' + switch['serial'] + '-confg'
-		#	try:
-		#		self.__tftp_replacecfg__(switch=switch,remotefilename=str(dir_prefix + filename))
-		#	except Exception as e:
-		#		print(e)
-		#		trynewname = True
-		#elif trynewname and 'new name' in switch.keys():
-		#	filename = '/' + switch['new name'] + '-conf'
-		#	try:
-		#		self.__tftp_replacecfg__(switch=switch,remotefilename=filename)
-		#	except:
-		#		raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
-		##except Exception as e:
-		#	print('this is just a normal exception')
-		#	print(e)
-
-
-	#def __tftp_replacecfg__(self,switch,time=17):
-	#		r = switch['session'].tftp_replaceconf(timeout=time)
-	#		if r:
-	#			del switch['session'] 
-
-
-	#	try:
-	#		success = Helper(self.tftp).tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
-	#		if success:
-	#				with open(outputfile) as f:
-	#					switch['config'] = f.read()
-	#				switch['session'].tftp_replaceconf(remotefilename)
-	#		else:
-	#			print('could not find file '  + remotefilename)
-	#			raise Exception
-	#	except Exception as e:
-	#		traceback.print_exc()
-	#		print(e)	
-
-
-
 
 	def _tftp_startup(self, switch):
 		# try get null-serial#.conf config
@@ -682,24 +641,6 @@ class Ciscoautoprovision:
 			raise Exception('not able to find any config files for switch ' + switch['IPaddress'])
 
 
-
-#if self.debug and found_config:
-			#	print('serial config copied to startup-confg successfully!')
-			#elif not found_config: 
-			#	if self.debug:
-			#		print('could not find configuration by serial number!')
-
-
-
-
-
-
-
-		#except Exception as e:
-		#	print('this is just a normal exception')
-		#	print(e)
-
-
 	def _startupcfg(self,switch,remotefilename,outputfile='./output/temp_config'):
 		#try:
 		success = Helper(self.tftp).tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
@@ -713,10 +654,6 @@ class Ciscoautoprovision:
 					print('new ip address information: ' + str(results))
 				switch['session'].tftp_getstartup(remotefilename)
 		return success
-				#raise Exception
-		#except Exception as e:
-		#	traceback.print_exc()
-		#	print(e)			
 
 
 	def _gen_rsa(self,switch,logfilename):
@@ -800,16 +737,21 @@ class Ciscoautoprovision:
 		cycle -- how long to wait between each ping, in seconds. Minimum is (and defaults to) 5
 		timeout -- total wait time, in seconds, before returning to the caller. Minimum is 30, defaults to 300
 		"""
+		# TODO: Allow simultaneous ping attempts
+		if type(target) is list:
+			target = target[0]
 		attempts = 1
 		cycle = cycle if cycle > 5 else 5
 		timeout = timeout if timeout >= 30 else 300
 		retries = timeout / cycle
 		while timeout > 0:
 			if self.debug:
-				print("Sending ping", attempts, "of", retries)
+				#print("Sending ping", attempts, "of", retries)
+				sys.stdout.write("\rSending ping " + str(attempts) + " of " + str(retries))
+				sys.stdout.flush()
 			if self.ping(target):
 				if self.debug:
-					print(target, "responded to ping!")
+					print("\n", target, "responded to ping!")
 				return True
 			sleep(cycle - 1) # Timeout is 1, so remove that from the overall wait
 			timeout -= cycle
@@ -817,7 +759,6 @@ class Ciscoautoprovision:
 		if self.debug:
 			print(target, "failed to come online")
 		return False
-
 
 
 class Helper:

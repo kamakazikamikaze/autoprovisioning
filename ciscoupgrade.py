@@ -52,7 +52,7 @@ class ciscoUpgrade:
 		self._sendrecieve('terminal length 0\r','#')
 		self._sendrecieve('terminal width 0\r','#')
 	
-	def _sendrecieve(self,command, expect, yesno='yes', verbose=False):
+	def _sendrecieve(self,command, expect, yesno='yes', verbose=False):  #, timeout=60):
 		time.sleep(0.5)
 		self.shell.send(command)
 		#create recieve buffer
@@ -195,12 +195,26 @@ class c38XXUpgrade(ciscoUpgrade):
 	
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
-		self._sendrecieve('software clean \r' ,'#')
-		self._sendrecieve('\r','#')
+		# self._sendrecieve('software clean file flash:\r' ,'#')
+		self._sendrecieve('delete /force /recursive flash: \r', '#', verbose=False)
 
-	def Softwareinstall(self,iOS_TimingFlag = "on-reboot"):
+
+	def softwareinstall(self,iOS_TimingFlag = "on-reboot"):
 		''' prepares and tells the switch to upgrade "on-reboot" by default'''
-		self._sendrecieve('software install file flash:' + self.bin +" "+ iOS_TimingFlag + '\r','#')
+		# For whatever asinine reason, Cisco requires a complete reload of the
+		# system if it is operating in BUNDLE mode so you can use the `software
+		# install` command. This is unacceptable.
+		# self._sendrecieve('software install file flash:' + self.bin +" "+ iOS_TimingFlag + '\r','#')
+		# SO SCREW IT. I'LL DO IT MY WAY.
+		# UNPACK THE FILE. SET THE BOOTVAR. SAVE THE RUNNING CONFIG. HAVE THE
+		# tftp_getstartup METHOD OVERWRITE THE STARTUP CONFIG. THEN REBOOT.
+		status = self._sendrecieve('software expand file flash:' + self.bin + ' to flash:\r', '#', verbose=True)
+		if 'error' in status and not 'already installed' in status:
+			raise Exception('Unable to expand image for installation!')
+		self._sendrecieve('config t\r', '#')
+		self._sendrecieve('boot system flash:packages.conf\r', '#')
+		self._sendrecieve('end\r', '#')
+		self._sendrecieve('write mem\r', '#')
 		time.sleep(0.5)
 
 
@@ -218,6 +232,7 @@ class c45xxUpgrade(ciscoUpgrade):
 			self._sendrecieve('copy tftp://' + self.tftpserver +'/bin/' + self.bin + ' bootflash:' + self.bin + '\r' ,'?')	
 			output = self._sendrecieve('\r','#',verbose=True)
 			if  'Error' not in output:
+
 				successful = True
 			else:
 				attempts += 1
@@ -241,7 +256,8 @@ class c45xxUpgrade(ciscoUpgrade):
 		bootfile_raw = self._sendrecieve('show bootvar \r','#',verbose=True)
 		bf = [x for x in bootfile_raw.split() if 'flash' in x][0].split(',')[0]
 		bf.split('.bin')[0] + '.bin'
-		print(bf)
+		if self.debug:
+			print(bf)
 		if len(bf.split('/')) > 2:
 			os_folder = '/'.join(bf.split('/')[0:-1])
 			self._sendrecieve('delete  /force /recursive ' + os_folder + ' \r' ,'#')
