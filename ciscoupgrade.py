@@ -187,7 +187,7 @@ class c38XXUpgrade(ciscoUpgrade):
 		# Clear out old software. We can place this at start of loop if desired
 		self._sendrecieve('delete /force /recursive flash:\r', '#', verbose=False)
 
-	def Softwareinstall(self,iOS_TimingFlag = "on-reboot"):		
+	def softwareinstall(self,iOS_TimingFlag = "on-reboot"):		
 		''' prepares and tells the switch to upgrade "on-reboot" by default'''
 		# For whatever asinine reason, Cisco requires a complete reload of the
 		# system if it is operating in BUNDLE mode so you can use the `software
