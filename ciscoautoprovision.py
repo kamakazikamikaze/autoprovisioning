@@ -244,8 +244,8 @@ class Ciscoautoprovision:
 					self._get_serial(switch)
 				except EasySNMPTimeoutError:
 					if self.debug:
-					print(switch['IPaddress'] + ' timed out.')
-						to_pop.append(switch)
+						print(switch['IPaddress'] + ' timed out.')
+					to_pop.append(switch)
 						#	traceback.print_exc()
 					continue
 				try:
@@ -316,10 +316,10 @@ class Ciscoautoprovision:
 					self._get_model(switch)
 					self._get_serial(switch)
 				except EasySNMPTimeoutError:
-					if self.debug:
+					#if self.debug:
 						#print('removing ' + switch['IPaddress'] + ' from switch list.')
-
 					continue
+
 				try:
 					self._get_new_name(switch)
 				except EasySNMPTimeoutError:
@@ -330,7 +330,7 @@ class Ciscoautoprovision:
 				self._gen_rsa(switch,logfilename=logfilename)
 				# open ssh session
 				self._ssh_opensession(switch)
-				self._tftp_startup()				if switch['IPaddress'] in self.upgrades:
+				if switch['IPaddress'] in self.upgrades:
 					# In order for the reboot to upgrade the device,
 					# the running configuration must be saved. Therefore
 					# the running-config should be overwritten with the 
@@ -349,6 +349,7 @@ class Ciscoautoprovision:
 					# 	self._ssh_opensession(switch)
 					# prep upgrade
 					self._prepupgrade(switch)
+					self._tftp_startup(switch)
 					# reboot
 					switch['session'].sendreload('no')
 					# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
@@ -751,6 +752,7 @@ class Ciscoautoprovision:
 		# TODO: Allow simultaneous ping attempts
 		if type(target) is list:
 			target = target[0]
+		print("Pinging", target)
 		attempts = 1
 		cycle = cycle if cycle > 5 else 5
 		timeout = timeout if timeout >= 30 else 300
