@@ -56,7 +56,7 @@ def generate_config(filename='autoProv.confg'):
 
 
 class Ciscoautoprovision:
-	def __init__(self,configfile=None,username=None,password=None):
+	def __init__(self,configfile): #,username=None,password=None
 		self.pver3 = (sys.version_info > (3, 0))
 		if not self.pver3:
 			requests.packages.urllib3.disable_warnings()
@@ -71,16 +71,16 @@ class Ciscoautoprovision:
 		self.senable = ''
 		self.tftp = ''
 		self.telnettimeout = 60
-		if configfile:
-			self.parseconfig(configfile)
-		if username is None:
-			self.user = getuser()
-		else:
-			self.user = username
-		if password is None:
-			self.passwd = None
-		else:
-			self.passwd = password
+		#if configfile:
+		self.parseconfig(configfile)
+		#if username is None:
+		#	self.user = getuser()
+		#else:
+		#	self.user = username
+		#if password is None:
+		#	self.passwd = None
+		#else:
+		#	self.passwd = password
 
 
 	def ping(self,host):
@@ -135,67 +135,77 @@ class Ciscoautoprovision:
 	#			self.switches.pop(i)
 
 
-	#user=None,passwd=None
-	#def search(self,target='http://localhost',index='logstash-networkswitches',time=3,port=None,authenticate=False):
-	#	self.passwd = getpass('sea password: ')
-	#	if port is None:
-	#		port = ''
-	#	else:
-	#		port = ':' + port  + '/' 
-	#	url = target + port + index + '*/_search/?pretty' 
-	#	term = 'Native VLAN mismatch*'
-	#	query = { 
-	#		'query': {
-	#			'filtered': {
-	#				'query': {
-	#					'query_string': {
-	#						'query': term,
-	#						'analyze_wildcard': 'true'
-	#					}
-	#				}
-	#			},
-	#		},
-	#		'filter': {
-	#			'bool': {
-	#				'must': [{
-	#					'range': {
-	#						'@timestamp': {
-	#							'gte': 'now-' + str(time) + 'h',
-	#							'lte': 'now'
-	#						}
-	#					}
-	#				}],
-	#			}
-	#		},
-	#		'size': 300000
-	#	}
-	#	#
-	#	if authenticate:
-	#		r = requests.get(url=url, data=json.dumps(query), verify=False, auth=(self.user,self.passwd))
-	#	else:
-	#		r = requests.get(url=url,data=json.dumps(query),verify=False)
-	#	r.raise_for_status()
-	#	result_dict = r.json()
-	#	hits = result_dict['hits']['hits']
-	#	results = []
-	#	for x in hits:
-	#		if '(1),' in x['_source']['message']:
-	#			result = {}
-	#			if 'logSourceIP' in x['_source'].keys():
-	#				result['IPaddress'] = x['_source']['logSourceIP']
-	#			elif 'host' in x['_source'].keys():
-	#				result['IPaddress'] = x['_source']['host']
-	#			result['hostname'] = gethostbyaddr(result['IPaddress'])[0]
-	#			result['feed'] = x['_source']['message'].split('with')[1].split()[0] # word after with
-	#			if 'null' in result['hostname']:
-	#				results.append(result)
-	#	self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
-	#	#self.removeunreachable() # remove unreachable switches from list
-	#	#list(set(map(lambda x: {x['_source']['host'] : x['_source']['message']},r.json()['hits']['hits'])))
-	#	#[(x['_source']['host'] , x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
-	#	#[(x['_source']['logSource'], x['_source']['logSourceIP'], x['_source']['message']) for x in r.json()['hits']['hits']  if '(1),' in x['_source']['message']]
-	#	pprint(self.switches)
+	
+	def search(self,target='http://localhost',index='logstash-autoprovision',time_hours=1,port=9200): #,authenticate=False 
+		if port is None:
+			port = ''
+		else:
+			port = ':' + str(port)  + '/' 
+		url = target + port + index + '*/_search/?pretty' 
+		term = 'Native VLAN mismatch*'
+		query = { 
+			'query': {
+				'filtered': {
+					'query': {
+						'query_string': {
+							'query': term,
+							'analyze_wildcard': 'true'
+						}
+					}
+				},
+			},
+			'filter': {
+				'bool': {
+					'must': [{
+						'range': {
+							'@timestamp': {
+								'gte': 'now-' + str(time_hours) + 'h',
+								'lte': 'now'
+							}
+						}
+					}],
+				}
+			},
+			'size': 10000
+		}
 
+		r = requests.get(url=url,data=json.dumps(query))
+		r.raise_for_status()
+		result_dict = r.json()
+		hits = result_dict['hits']['hits']
+		results = []
+		errs = set()
+		for log in hits:
+			try:
+				host = {}
+				host['IPaddress'] = log['_source']['host']
+				neighbors = ''
+				for r in re.findall(r'(?<=, with )([\d\w\-\.\/]+ [\d\w\-\.\/]+)',log['_source']['message']):
+					neighbors += r
+				host['nei_raw'] = neighbors
+				results.append(host)
+			except Exception:
+				traceback.print_exc()
+				if log['_source']['host'] not in list(errs):
+					errs.add(log['_source']['host'])
+					print('cannot parse log: ' + log['_source']['host'])
+		self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
+		for switch in self.switches:
+			try:
+				switch['hostname'] = gethostbyaddr(switch['IPaddress'])[0]
+				switch['neighbors'] = {}
+				neighbor = switch['nei_raw'].encode().split()
+				n = neighbor.pop(0)
+				switch['neighbors'].setdefault(n,[])
+				for nei in neighbor:
+					switch['neighbors'][n].append(nei)
+				del switch['nei_raw']
+			except:
+				traceback.print_exc()
+				print(switch)
+				print('could not find hostname for ' + switch['IPaddress'])
+		pprint(self.switches)
+	
 
 	def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
 		try:
