@@ -54,6 +54,7 @@ def generate_config(filename='autoProv.confg'):
 	with open('./cfg/' + filename, 'w') as dc:
 		json.dump(d, dc, indent=4, sort_keys=True)
 
+
 class Ciscoautoprovision:
 	def __init__(self,configfile=None,username=None,password=None):
 		self.pver3 = (sys.version_info > (3, 0))
@@ -259,7 +260,6 @@ class Ciscoautoprovision:
 		for s in to_pop:
 			print('removing ' + switch['IPaddress'] + ' from switch list.')
 			self.switches.pop(self.switches.index(s))
-
 
 
 	def get_model(self):
@@ -618,8 +618,6 @@ class Ciscoautoprovision:
 		return ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(size))
 
 
-
-
 	def _tftp_replace(self,switch,time):
 			if 'new IPaddress' in switch.keys():
 				switch['session'].tftp_replaceconf(timeout=time)
@@ -630,6 +628,7 @@ class Ciscoautoprovision:
 
 	def _tftp_startup(self, switch):
 		# try get null-serial#.conf config
+		switch['session'].blastvlan()
 		found_config = False
 		if not found_config and 'serial' in switch.keys():
 			if self.debug:
@@ -770,7 +769,7 @@ class Ciscoautoprovision:
 			timeout -= cycle
 			attempts += 1
 		if self.debug:
-			print(target, "failed to come online")
+			print("\n", target, "failed to come online")
 		return False
 
 
