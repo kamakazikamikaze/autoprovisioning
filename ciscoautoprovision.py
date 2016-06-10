@@ -276,7 +276,7 @@ class Ciscoautoprovision:
 		#to_pop = []
 		for switch in self.switches:
 			try:
-				print('switch: ' + switch['IPaddress'])
+				print('switch:', switch['IPaddress'])
 				self._get_model(switch)
 			#except Exception:
 			#	print(switch['IPaddress'] + ' timed out.')
@@ -284,7 +284,7 @@ class Ciscoautoprovision:
 			#	self.switches.pop(self.switches.index(switch))
 			except Exception as e:
 				print(e)
-				print(switch['IPaddress'] + ' timed out.')
+				print(switch['IPaddress'], ' timed out.')
 				#print('removing ' + switch['IPaddress'] + ' from switch list.')
 				#topop.append(self.switches.index(switch))
 		#print(topop)
@@ -306,12 +306,13 @@ class Ciscoautoprovision:
 	def get_serial(self):
 		for switch in self.switches:
 			try:
-				serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
-				switch['serial'] = serialnum.value
+				# serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
+				switch['serial'] = self.getoids[switch['model']](switch['IPaddress'],self.community)
+				# switch['serial'] = serialnum.value
 				if self.debug:
-					print('serial number for ' + switch['IPaddress'] + ' is ' + switch['serial'])
+					print('serial number for', switch['IPaddress'], 'is', switch['serial'])
 			except Exception:
-				print('error while getting serial for switch ' + switch['IPaddress'])
+				print('error while getting serial for switch', switch['IPaddress'])
 				if self.debug:
 					traceback.print_exc()
 
@@ -329,7 +330,6 @@ class Ciscoautoprovision:
 					#if self.debug:
 						#print('removing ' + switch['IPaddress'] + ' from switch list.')
 					continue
-
 				try:
 					self._get_new_name(switch)
 				except EasySNMPTimeoutError:
@@ -364,6 +364,7 @@ class Ciscoautoprovision:
 					switch['session'].sendreload('no')
 					# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
 					self._wait(switch['new IPaddress'], timeout=1200)
+					self._gen_rsa(switch, logfilename=logfilename)
 				else:
 					self._tftp_startup(switch)
 					self._tftp_replace(switch,time=15)
@@ -474,18 +475,24 @@ class Ciscoautoprovision:
 		# filesoid = u'CISCO-FLASH-MIB::ciscoFlashFileName'
 		bootoid = u'SNMPv2-SMI::enterprises.9.2.1.73.0'
 		softimage_raw = snmp_get(bootoid, hostname=switch['IPaddress'],community=self.community,version=2).value
-		softimage = softimage_raw.split('/')[-1].lower()
-		if not softimage_raw:
+		if len(softimage_raw.split('/')) <= 1:
+			softimage = softimage_raw.split(':')[-1].lower()
+		else:
+			softimage = softimage_raw.split('/')[-1].lower()
+		if not softimage_raw or softimage == 'packages.conf':
 			softimage_raw = snmp_get(imageoid,hostname=switch['IPaddress'],community=self.community,version=2).value
 			#softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
 			#softimage = self.rm_nonalnum(softimage_raw)
 			# Is there a ##.#(##)EX in the string?
-			if re.findall(r'\d+\(.+?\)[eE]', softimage_raw):
+			if re.findall(r'\d+\(.+?\)[eE][xX]', softimage_raw):
 				t = softimage_raw
 				t = re.sub(r'\.','',t)
 				t = re.sub(r'\((?=\d)','-',t)
 				softimage_raw = re.sub(r'\)(?=\w+\d+)','.',t)
 				# Also remove the trailing '-m' in the reported image name
+			# 03.07.03E is not in cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin
+			elif re.findall(r'\d+\.\d+\.\d+[eE]', softimage_raw):
+				softimage_raw = re.sub(r'(?<=\d{2}\.\d{2}\.\d{2})[eE]','', softimage_raw)
 			softimage = [re.sub(r'\-m$', '', x.lower()) for x in re.findall(r'(?<=Software \()[\w\d-]+(?=\))|(?<=Version )[\d\.\w-]+',softimage_raw)]
 		physical = snmp_walk(modeloid,hostname=switch['IPaddress'],community=self.community,version=2)
 		if len(physical[0].value) == 0:
@@ -493,6 +500,8 @@ class Ciscoautoprovision:
 		model = str(physical[0].value.split('-')[1])
 		#print(model)
 		#print(switch['IPaddress'],model,softimage)
+		if self.debug:
+			print(switch['hostname'], softimage)
 		if model not in self.firmwares.keys():
 			raise Exception('model' + model + 'not found in firmware list!')
 			#TODO: make a way to add firmware
@@ -500,18 +509,18 @@ class Ciscoautoprovision:
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			if self.debug:
-				print('upgrade:\tNO, ' + switch['IPaddress'] + ' already on ' + switch['bin'])
+				print('upgrade:\tNO,', switch['IPaddress'], 'already on', switch['bin'])
 		elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			if self.debug:
-				print('upgrade:\tNO, ' + switch['IPaddress'] + ' already on ' + switch['bin'])
+				print('upgrade:\tNO,', switch['IPaddress'], 'already on', switch['bin'])
 		else:
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			self.upgrades.append(switch['IPaddress'])
 			if self.debug:
-				print('upgrade:\tyes,' + switch['IPaddress'] + ' to ' + switch['bin'])
+				print('upgrade:\tyes,', switch['IPaddress'], 'from', softimage, 'to', switch['bin'])
 
 
 	def _get_new_name(self,switch):
@@ -527,7 +536,7 @@ class Ciscoautoprovision:
 				# newname = [x.value.split()[0] for x in alias if x.oid_index == i][0]
 				if newname:
 					if self.debug:
-						print('New Name:\t' + newname + ' found for '  + switch['hostname'])
+						print('New Name:\t', newname, ' found for ', switch['hostname'])
 					switch['new name'] = newname
 					pass # TODO
 			except IndexError:
@@ -535,12 +544,13 @@ class Ciscoautoprovision:
 
 
 	def _get_serial(self,switch):
-		#switch['serial'] = None
-		serialnum = ''
-		serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
+		# switch['serial'] = None
+		# serialnum = ''
+		# serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
+		serialnum = self.getoids[switch['model']](switch['IPaddress'],self.community)
 		if serialnum:
-			switch['serial'] = serialnum.value
-		print('serial num:\t' + switch['IPaddress'] + ' is ' + switch['serial'])
+			switch['serial'] = serialnum
+		print('serial num:\t', switch['IPaddress'], ' is ', switch['serial'])
 
 
 	def _ssh_opensession(self,switch):
@@ -567,7 +577,7 @@ class Ciscoautoprovision:
 
 
 	def _prepupgrade(self,switch):
-		print('\ntry upgrade ', switch['IPaddress'],switch['model'],'\n')
+		print('\nTry upgrade ', switch['IPaddress'],switch['model'],'\n')
 		if self.debug:
 			print('\n####tftp_setup####\n')
 		switch['session'].tftp_setup()
@@ -641,11 +651,15 @@ class Ciscoautoprovision:
 		switch['session'].blastvlan()
 		found_config = False
 		if not found_config and 'serial' in switch.keys():
-			if self.debug:
-				print('searching for serial config')
-			dir_prefix = '/autoprov'
-			filename = '/' + switch['serial'] + '-confg'
-			found_config = self._startupcfg(switch=switch,remotefilename=dir_prefix + filename)
+			for serial in switch['serial']:
+				if self.debug:
+					print('searching for serial config')
+				dir_prefix = '/autoprov'
+				filename = '/' + serial + '-confg'
+				found_config = self._startupcfg(switch=switch,remotefilename=dir_prefix + filename)
+				if found_config:
+					switch['serial'] = [serial]
+					break
 		if not found_config and 'new name' in switch.keys():
 			if self.debug:
 				print('searching for cdp desc config')
@@ -678,9 +692,8 @@ class Ciscoautoprovision:
 
 
 	def _gen_rsa(self,switch,logfilename):
-		
 		if self.debug:
-			print('connecting to host ' + switch['hostname'])
+			print('connecting to host', switch['hostname'])
 		if self.pver3:
 			s = pexpect.spawnu('telnet ' + switch['IPaddress'])
 		else:
@@ -738,6 +751,12 @@ class Ciscoautoprovision:
 		s.sendline('quit')
 		s.expect('#')
 		successful = True if 'Key pair import succeeded' in s.before else False
+		s.sendline('ip ssh version 2')
+		s.expect('#')
+		s.sendline('exit')
+		s.expect('#')
+		s.sendline('write mem')
+		s.expect('#')
 		s.logfile.close()
 		s.close()
 		if not successful:
@@ -781,6 +800,20 @@ class Ciscoautoprovision:
 		if self.debug:
 			print("\n", target, "failed to come online")
 		return False
+	
+	getoids = {
+	    'C4506': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+	    'C3850': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1', '1000', '2000', '3000', '4000', '5000', '6000', '7000', '8000', '9000']],
+	    'C3750X': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
+	    'C3750V2': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
+	    'C3750': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
+	    'C3560': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+	    'C3560X': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+	    'C3560CG': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+	    'C3560CX': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+	    'C2940': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],    
+	    'C2960': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value]
+	}
 
 
 class Helper:

@@ -165,7 +165,7 @@ class ciscoUpgrade:
 
 
 	def blastvlan(self):
-		self._sendreceive('delete /force flash:vlan.dat', '#')
+		self._sendreceive('delete /force flash:vlan.dat\r', '#')
 
 
 	def tftp_replaceconf(self,timeout=17):
