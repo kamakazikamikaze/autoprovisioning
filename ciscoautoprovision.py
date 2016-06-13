@@ -127,12 +127,12 @@ class CiscoAutoProvision:
 	def _parseconfig(self,filename):
 		with open('./cfg/' + filename) as f:
 			data = json.load(f)
-		#pprint(data)
 		try:
 			if int(data['debug']) <= 1  and int(data['debug']) >= 0:
 				self.debug = int(data['debug'])
 			else:
-				raise Exception('\'debug\' is not a valid value!')
+				self.debug = 0
+				# raise Exception('\'debug\' is not a valid value!')
 			if 'debug print' in data.keys():
 				self.debug_print = int(data['debug print'])
 			else:
@@ -161,7 +161,8 @@ class CiscoAutoProvision:
 				self.tftp = data['tftp server']
 			self._rsa_pass_size = 32 if not 'rsa pass size' in data.keys() else data['rsa pass size']
 			if int(data['telnet timeout']) < 5:
-				raise Exception('telnet timeout must be greater than 30 seconds')
+				data['telnet timeout'] = 30
+				# raise Exception('telnet timeout must be greater than 30 seconds')
 			else:
 				self.telnettimeout = int(data['telnet timeout'])
 		except Exception as e:
@@ -217,11 +218,9 @@ class CiscoAutoProvision:
 				host['nei_raw'] = neighbors
 				results.append(host)
 			except Exception:
-				# traceback.print_exc()
-				self.logger.error(log['_source']['host'],exec_info=True)
+				self.logger.error(log['_source']['host'], exc_info=True)
 				if log['_source']['host'] not in list(errs):
 					errs.add(log['_source']['host'])
-					# print('cannot parse log: ' + log['_source']['host'])
 		self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
 		for switch in self.switches:
 			try:
@@ -234,14 +233,9 @@ class CiscoAutoProvision:
 					switch['neighbors'][n].append(nei)
 				del switch['nei_raw']
 			except:
-				# traceback.print_exc()
-				self.logger.error(switch, exec_info=True)
+				self.logger.error(switch, exc_info=True)
 				self.logger.debug('could not find hostname for ' + switch['IPaddress'])
-				# print(switch)
-				# print('could not find hostname for ' + switch['IPaddress'])
 		self.logger.debug(pformat(self.switches))
-		# if self.debug:
-			# pprint(self.switches)
 
 
 	def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
@@ -272,21 +266,19 @@ class CiscoAutoProvision:
 					except:
 						if s not in list(errs):
 							errs.add(s)
-							print('cannot resolve hostname: ' + s)
+							self.logger.debug('Cannot resolve hostname: %s', s)
 			#self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
 			self.switches = results
 			pprint(self.switches)
 		except Exception as e:
-			# traceback.print_exc()
-			print(e)
+			self.logger.error('Error occurred: %s', e, exc_info=True)
 
 
 	def autoupgrade(self, switch):
 		try:
-			logging.getLogger('CAP.' + switch['hostname'])
-			# if self.debug:
-			# 	print('\n', switch['IPaddress'], '\t', switch['hostname'])
-			logging.info(switch['IPaddress'])
+			# logger = logging.getLogger('CAP.' + switch['hostname'].split('.')[0])
+			logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
+			logger.info('Beginning provisioning process')
 			try:
 				self._get_model(switch)
 				self._get_serial(switch)
@@ -295,9 +287,7 @@ class CiscoAutoProvision:
 			try:
 				self._get_new_name(switch)
 			except EasySNMPTimeoutError:
-				# if self.debug:
-				# 	print('could not access neighbor switch')
-				logging.debug('Could not access neighbor switch')
+				logger.debug('Could not access neighbor switch')
 			#generate RSA keys
 			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
 			self._gen_rsa(switch,logfilename=logfilename)
@@ -322,8 +312,7 @@ class CiscoAutoProvision:
 				self._wait(switch['new IPaddress'])
 			#continual ping
 		except Exception as e:
-			logging.error('Error occurred', exec_info=True)
-			# print(e)
+			logger.error('Error occurred: %s', e, exc_info=True)
 	
 
 	def run(self):
@@ -551,13 +540,13 @@ class CiscoAutoProvision:
 		logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 		success = Helper(self.tftp).tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
 		if success:
-				with open(outputfile,'r+b') as f:
-					log = mmap.mmap(f.fileno(), 0)
-				results = re.findall(r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s(?:\d{1,3}\.){3}\d{1,3})', log)
-				switch['new IPaddress'] = map(lambda (g0,g1): g1, results)
-				log.close()
-				logger.debug('new ip address information: ' + str(results))
-				switch['session'].tftp_getstartup(remotefilename)
+			with open(outputfile,'r+b') as f:
+				log = mmap.mmap(f.fileno(), 0)
+			results = re.findall(r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s(?:\d{1,3}\.){3}\d{1,3})', log)
+			switch['new IPaddress'] = map(lambda (g0,g1): g1, results)
+			log.close()
+			logger.debug('new ip address information: ' + str(results))
+			switch['session'].tftp_getstartup(remotefilename)
 		return success
 
 
@@ -659,7 +648,7 @@ class CiscoAutoProvision:
 			sleep(cycle - 1) # Timeout is 1, so remove that from the overall wait
 			timeout -= cycle
 			attempts += 1
-		self.warning('%s did not respond to pings!', target)
+		self.logger.warning('%s did not respond to pings!', target)
 		return False
 	
 	getoids = {
@@ -740,7 +729,7 @@ class CapTest(CiscoAutoProvision):
 				except EasySNMPTimeoutError:
 					print('could not access neighbor switch')
 			except Exception:
-				logging.error('Failed to retrieve information from %s', switch['IPaddress'], exc_info=True)
+				self.logger.error('Failed to retrieve information from %s', switch['IPaddress'], exc_info=True)
 		for s in to_pop:
 			self.logger.info('Removing %s from switch list', switch['IPaddress'])
 			self.switches.pop(self.switches.index(s))
@@ -813,10 +802,10 @@ class CapTest(CiscoAutoProvision):
 		and in the event that fails it will look in the /tftpboot/ folder for a model specific base config. 
 		 '''
 		for switch in self.switches:
-				try:
-					self._tftp_startup(switch)
-				except Exception as e:
-					self.logger.error('%s: %s', switch['IPaddress'], e, exc_info=True)
+			try:
+				self._tftp_startup(switch)
+			except Exception as e:
+				self.logger.error('%s: %s', switch['IPaddress'], e, exc_info=True)
 
 
 	def reboot_save(self):
