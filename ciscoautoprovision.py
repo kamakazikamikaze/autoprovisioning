@@ -12,7 +12,7 @@ import os
 import re
 import mmap
 import tftpy
-import multiprocessing as mp
+from multiprocessing import Pool
 import subprocess
 import tempfile
 import string
@@ -22,41 +22,21 @@ import ciscoupgrade as cup
 
 try:    # Python 3 compatibility
 	input = raw_input
+	range = xrange
+	import copy_reg
+	import types
+	def _reduce_method(m):
+		if m.im_self is None:
+			return getattr, (m.im_class, m.im_func.func_name)
+		else:
+			return getattr, (m.im_self, m.im_func.func_name)
+	copy_reg.pickle(types.MethodType, _reduce_method)
 except NameError:
 	pass
 
-def generate_config(filename='autoProv.confg'):
-	d = {
-		'target firmware':{
-			'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
-			'C3560CG': 'c3560c405ex-universalk9-mz.150-2.SE.bin',
-			'C3560CX': 'c3560cx-universalk9-mz.152-4.E1.bin',
-			'C3560G': 'c3560-ipbasek9-mz.122-55.SE10.bin',
-			'C3560V2': 'c3560-ipbasek9-mz.122-55.SE10.bin',
-			'C3560X': 'c3560e-universalk9-mz.122-55.SE3.bin',
-			'C3750': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-			'C3750G': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-			'C3750V2': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-			'C3750X': 'c3750e-ipbasek9-mz.150-2.SE9.bin',
-			'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
-			'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
-		},
-		'debug':'1',
-		'output dir':'./output/',
-		'default rwcommunity': 'private',
-		'switch username': 'default',
-		'switch password': 'l4y3r2',
-		'switch enable': 'p4thw4y',
-		'tftp server': '10.0.0.254',
-		'telnet timeout': 20,
-		'production rwcommunity' : ''
-	}
-	with open('./cfg/' + filename, 'w') as dc:
-		json.dump(d, dc, indent=4, sort_keys=True)
 
-
-class Ciscoautoprovision:
-	def __init__(self,configfile): #,username=None,password=None
+class CiscoAutoProvision:
+	def __init__(self,configfile):
 		self.pver3 = (sys.version_info > (3, 0))
 		if not self.pver3:
 			requests.packages.urllib3.disable_warnings()
@@ -71,16 +51,37 @@ class Ciscoautoprovision:
 		self.senable = ''
 		self.tftp = ''
 		self.telnettimeout = 60
-		#if configfile:
 		self.parseconfig(configfile)
-		#if username is None:
-		#	self.user = getuser()
-		#else:
-		#	self.user = username
-		#if password is None:
-		#	self.passwd = None
-		#else:
-		#	self.passwd = password
+
+
+	def generate_config(filename='autoProv.confg'):
+		d = {
+			'target firmware':{
+				'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+				'C3560CG': 'c3560c405ex-universalk9-mz.150-2.SE.bin',
+				'C3560CX': 'c3560cx-universalk9-mz.152-4.E1.bin',
+				'C3560G': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+				'C3560V2': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+				'C3560X': 'c3560e-universalk9-mz.122-55.SE3.bin',
+				'C3750': 'c3750-ipbasek9-mz.122-55.SE9.bin',
+				'C3750G': 'c3750-ipbasek9-mz.122-55.SE9.bin',
+				'C3750V2': 'c3750-ipbasek9-mz.122-55.SE9.bin',
+				'C3750X': 'c3750e-ipbasek9-mz.150-2.SE9.bin',
+				'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
+				'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
+			},
+			'debug':'1',
+			'output dir':'./output/',
+			'default rwcommunity': 'private',
+			'switch username': 'default',
+			'switch password': 'l4y3r2',
+			'switch enable': 'p4thw4y',
+			'tftp server': '10.0.0.254',
+			'telnet timeout': 20,
+			'production rwcommunity' : ''
+		}
+		with open('./cfg/' + filename, 'w') as dc:
+			json.dump(d, dc, indent=4, sort_keys=True)
 
 
 	def ping(self,host):
@@ -125,18 +126,8 @@ class Ciscoautoprovision:
 		except Exception as e:
 			sys.exit("An error occurred while parsing the config file: " + str(e))
 
-
-	#def removeunreachable(self):
-	#	for i, d in enumerate(self.switches):
-	#		ping_str = "ping -W1 -c 1 " + d['IPaddress'] + " > /dev/null 2>&1 "
-	#		response = os.system(ping_str)
-	#		#Note:original response is 1 for fail; 0 for success; so we flip it
-	#		if response:
-	#			self.switches.pop(i)
-
-
 	
-	def search(self,target='http://localhost',index='logstash-autoprovision',time_hours=1,port=9200): #,authenticate=False 
+	def search(self,target='http://localhost',index='logstash-autoprovision',time_minutes=60,port=9200): #,authenticate=False 
 		if port is None:
 			port = ''
 		else:
@@ -159,7 +150,7 @@ class Ciscoautoprovision:
 					'must': [{
 						'range': {
 							'@timestamp': {
-								'gte': 'now-' + str(time_hours) + 'h',
+								'gte': 'now-' + str(time_minutes) + 'm',
 								'lte': 'now'
 							}
 						}
@@ -204,7 +195,8 @@ class Ciscoautoprovision:
 				traceback.print_exc()
 				print(switch)
 				print('could not find hostname for ' + switch['IPaddress'])
-		pprint(self.switches)
+		if self.debug:
+			pprint(self.switches)
 	
 
 	def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
@@ -244,221 +236,60 @@ class Ciscoautoprovision:
 			print(e)
 
 
-	def get_information(self):
-		to_pop = []
-		for switch in self.switches:
+	#@classmethod
+	def autoupgrade(self, switch):
+		try:
+			if self.debug:
+				print('\n', switch['IPaddress'], '\t', switch['hostname'])
 			try:
-				if self.debug:
-					print('\n' + switch['IPaddress'] + '\t'  + switch['hostname'])
-				try:
-					self._get_model(switch)
-					self._get_serial(switch)
-				except EasySNMPTimeoutError:
-					if self.debug:
-						print(switch['IPaddress'] + ' timed out.')
-					to_pop.append(switch)
-						#	traceback.print_exc()
-					continue
-				try:
-					self._get_new_name(switch)
-				except EasySNMPTimeoutError:
-					print('could not access neighbor switch')
-			except Exception:
-				if self.debug:
-					print('error retrieving switch information from ' + switch['IP'])
-					#traceback.print_exc()
-		for s in to_pop:
-			print('removing ' + switch['IPaddress'] + ' from switch list.')
-			self.switches.pop(self.switches.index(s))
-
-
-	def get_model(self):
-		#to_pop = []
-		for switch in self.switches:
-			try:
-				print('switch:', switch['IPaddress'])
 				self._get_model(switch)
-			#except Exception:
-			#	print(switch['IPaddress'] + ' timed out.')
-			#	print('removing ' + switch['IPaddress'] + ' from switch list.')
-			#	self.switches.pop(self.switches.index(switch))
-			except Exception as e:
-				print(e)
-				print(switch['IPaddress'], ' timed out.')
-				#print('removing ' + switch['IPaddress'] + ' from switch list.')
-				#topop.append(self.switches.index(switch))
-		#print(topop)
-		#for s in topop:
-		#	self.switches.pop(s)
-				#traceback.print_exc()
-		
-
-	def get_new_name(self):
-		for switch in self.switches:
+				self._get_serial(switch)
+			except EasySNMPTimeoutError:
+				raise Exception('Could not retrieve model and/or serial!')
 			try:
 				self._get_new_name(switch)
-			except:
+			except EasySNMPTimeoutError:
 				if self.debug:
-					print('Could not get new name for ' + switch['IPaddress'])
-					traceback.print_exc()
-
-
-	def get_serial(self):
-		for switch in self.switches:
-			try:
-				# serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
-				switch['serial'] = self.getoids[switch['model']](switch['IPaddress'],self.community)
-				# switch['serial'] = serialnum.value
-				if self.debug:
-					print('serial number for', switch['IPaddress'], 'is', switch['serial'])
-			except Exception:
-				print('error while getting serial for switch', switch['IPaddress'])
-				if self.debug:
-					traceback.print_exc()
-
-
-	def autoupgrade(self):
-		for switch in self.switches:
-			try:
-				# get information
-				if self.debug:
-					print('\n', switch['IPaddress'], '\t', switch['hostname'])
-				try:
-					self._get_model(switch)
-					self._get_serial(switch)
-				except EasySNMPTimeoutError:
-					#if self.debug:
-						#print('removing ' + switch['IPaddress'] + ' from switch list.')
-					continue
-				try:
-					self._get_new_name(switch)
-				except EasySNMPTimeoutError:
-					if self.debug:
-						print('could not access neighbor switch')
-				#generate RSA keys
-				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
-				self._gen_rsa(switch,logfilename=logfilename)
-				# open ssh session
-				self._ssh_opensession(switch)
-				if switch['IPaddress'] in self.upgrades:
-					# In order for the reboot to upgrade the device,
-					# the running configuration must be saved. Therefore
-					# the running-config should be overwritten with the 
-					# to-be/startup-config, set the target boot image,
-					# then save changes after applying the reboot command
-					# self._tftp_replace(switch,time=15)
-					# SSH session was deleted. Check for a new IP address
-					# and open another one using that.
-					# if 'new IPaddress' in switch.keys():
-					# 	switch['old IPaddress'] = switch['IPaddress']
-					# 	switch['IPaddress'] = switch['new IPaddress'][0]
-					# 	if self.debug:
-					# 		print('Waiting to create SSH session for device\'s new IP...')
-					# 	if not self._wait(switch['IPaddress'], timeout=300):
-					# 		raise Exception('Device did not come back up with new IP address!')
-					# 	self._ssh_opensession(switch)
-					# prep upgrade
-					self._prepupgrade(switch)
-					self._tftp_startup(switch)
-					# reboot
-					switch['session'].sendreload('no')
-					# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
-					self._wait(switch['new IPaddress'], timeout=1200)
-					self._gen_rsa(switch, logfilename=logfilename)
-				else:
-					self._tftp_startup(switch)
-					self._tftp_replace(switch,time=15)
-					self._wait(switch['new IPaddress'])
-				#continual ping
-			except Exception as e:
-				print(e)
-
-				#if self.debug:
-					#traceback.print_exc()
-
-
-	def ssh_opensession(self):
-		for switch in self.switches:
-			try:
-				self._ssh_opensession(switch)
-			except Exception as e:
-				print(e)
-				if self.debug:
-					traceback.print_exc()
-
-
-	def prepupgrade(self):
-		for switch in self.switches:
+					print('could not access neighbor switch')
+			#generate RSA keys
+			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
+			self._gen_rsa(switch,logfilename=logfilename)
+			# open ssh session
+			self._ssh_opensession(switch)
 			if switch['IPaddress'] in self.upgrades:
-				try:
-					self._prepupgrade(switch)
-				except Exception as e:
-					print(e)
-					traceback.print_exc()
-
-
-	def tftp_replace(self):
-		for switch in self.switches:
-			if switch['IPaddress'] not in self.upgrades:
-				try:
-					self._tftp_replace(switch,time=17)
-				except Exception as e:
-					#traceback.print_exc()
-					if self.debug:
-						print('ERROR: ' + str(e))
-
-
-	def tftp_startup(self):
-		'''trys to pull a configuration from the given tftp server. the tftp_startup will first
-		try and get a config based on the serial number in a serialnum-conf format in the tftpboot/autoprov/ folder
-		if that fails then it checks in the base /tftpboot/ folder for a config that is the same as the feedport description 
-		and in the event that fails it will look in the /tftpboot/ folder for a model specific base config. 
-		 '''
-		for switch in self.switches:
-			#if switch['IPaddress'] in self.upgrades:
-				try:
-					print('\n## ' + switch['IPaddress'] + '\n')
-					self._tftp_startup(switch)
-					print('Config transfered successfully!')
-				except Exception as e:
-					print(e)
-					#traceback.print_exc()
-					#if self.debug:
-					#	print('ERROR: ' + str(e))
-
-	
-	def reboot_save(self):
-		for switch in self.switches:
-			try:
+				# In order for the reboot to upgrade the device,
+				# the running configuration must be saved. Therefore
+				# the running-config should be overwritten with the 
+				# to-be/startup-config, set the target boot image,
+				# then save changes after applying the reboot command
+				self._prepupgrade(switch)
+				self._tftp_startup(switch)
+				# reboot
 				switch['session'].sendreload('no')
-			except Exception as e:
-				#traceback.print_exc()
-				if self.debug:
-					print('ERROR: ' + str(e))
-
-
-	def generate_rsa(self):
-		for switch in self.switches:
-			try:
-				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
-				self._gen_rsa(switch,logfilename=logfilename)
-			except Exception as e:
-				print(e)
-				if self.debug:
-					with open(logfilename, "r") as f:
-						print(f.read())
-
-
-	def editswitchlist(self):
-		for index, switch in enumerate(self.switches):
-			print(str(index) + ': ' + switch['IPaddress'] + '\t'  + switch['hostname'])
-			r = -69
-		while r not in [''] + map(lambda (x,y): str(x), enumerate(self.switches)):
-			r = raw_input('Enter switch number to pop. leave empty to stop editing.')
-		if r and r.isdigit():
-			print(self.switches[int(r)]['IPaddress'] + ' was removed')
-			self.switches.pop(int(r))
+				# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
+				self._wait(switch['new IPaddress'], timeout=1200)
+				self._gen_rsa(switch, logfilename=logfilename)
+			else:
+				self._tftp_startup(switch)
+				self._tftp_replace(switch,time=15)
+				self._wait(switch['new IPaddress'])
+			#continual ping
+		except Exception as e:
+			print(e)
 		
+
+	def run(self):
+		'''
+		Full provisioning process
+		'''
+		self.search()
+		# if self.switches:
+		p = Pool()
+		for switch in self.switches:
+			p.apply_async(self.autoupgrade, (switch,))
+		p.close()
+		p.join()
+
 
 	def _get_model(self,switch):
 		# Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
@@ -802,17 +633,19 @@ class Ciscoautoprovision:
 		return False
 	
 	getoids = {
-	    'C4506': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
-	    'C3850': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1', '1000', '2000', '3000', '4000', '5000', '6000', '7000', '8000', '9000']],
-	    'C3750X': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
-	    'C3750V2': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
-	    'C3750': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
-	    'C3560': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-	    'C3560X': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-	    'C3560CG': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-	    'C3560CX': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-	    'C2940': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],    
-	    'C2960': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value]
+		'C4506': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+		'C4506R': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+		'C4507': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+		'C3850': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1', '1000', '2000', '3000', '4000', '5000', '6000', '7000', '8000', '9000']],
+		'C3750X': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
+		'C3750V2': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
+		'C3750': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
+		'C3560': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+		'C3560X': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+		'C3560CG': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+		'C3560CX': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+		'C2940': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],    
+		'C2960': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value]
 	}
 
 
@@ -824,14 +657,17 @@ class Helper:
 			raise Exception('no response from server!')
 		self.client = tftpy.TftpClient(host=self.server, port=69)
 	
+
 	def _ping_(self,host):
 		ping_command = "ping -W1 -c 1 " + host + " > /dev/null 2>&1 "
 		response = os.system(ping_command)
 		#Note:response is 1 for fail; 0 for success;
 		return not response
 	
+
 	def tftp_putconf(self, inputfile, remotefilename):
 		self.client.upload(filename=remotefilename, input=inputfile)
+
 
 	def tftp_getconf(self, remotefilename, outputfile='./output/temp_config'):
 		'''returns true or false depending on whether tftpget was successfull or not'''
@@ -842,3 +678,155 @@ class Helper:
 			#if 'File not found' in t.message:
 				#pass	
 			return False
+
+
+class CapTest(CiscoAutoProvision):
+
+	def editswitchlist(self):
+		for index, switch in enumerate(self.switches):
+			print(str(index) + ': ' + switch['IPaddress'] + '\t'  + switch['hostname'])
+			r = -69
+		while r not in [''] + map(lambda (x,y): str(x), enumerate(self.switches)):
+			r = raw_input('Enter switch number to pop. leave empty to stop editing.')
+		if r and r.isdigit():
+			print(self.switches[int(r)]['IPaddress'] + ' was removed')
+			self.switches.pop(int(r))
+
+
+	def get_information(self):
+		to_pop = []
+		for switch in self.switches:
+			try:
+				if self.debug:
+					print('\n' + switch['IPaddress'] + '\t'  + switch['hostname'])
+				try:
+					self._get_model(switch)
+					self._get_serial(switch)
+				except EasySNMPTimeoutError:
+					if self.debug:
+						print(switch['IPaddress'] + ' timed out.')
+					to_pop.append(switch)
+						#	traceback.print_exc()
+					continue
+				try:
+					self._get_new_name(switch)
+				except EasySNMPTimeoutError:
+					print('could not access neighbor switch')
+			except Exception:
+				if self.debug:
+					print('error retrieving switch information from ' + switch['IP'])
+					#traceback.print_exc()
+		for s in to_pop:
+			print('removing ' + switch['IPaddress'] + ' from switch list.')
+			self.switches.pop(self.switches.index(s))
+
+
+	def upgradeall(self):
+		for switch in self.switches:
+			self.autoupgrade(switch)
+
+
+	def get_model(self):
+		for switch in self.switches:
+			try:
+				print('switch:', switch['IPaddress'])
+				self._get_model(switch)
+			except Exception as e:
+				print(e)
+				print(switch['IPaddress'], ' timed out.')
+
+
+	def get_new_name(self):
+		for switch in self.switches:
+			try:
+				self._get_new_name(switch)
+			except:
+				if self.debug:
+					print('Could not get new name for ' + switch['IPaddress'])
+					traceback.print_exc()
+
+
+	def get_serial(self):
+		for switch in self.switches:
+			try:
+				# serialnum = snmp_get(hostname=switch['IPaddress'], version=2, community=self.community, oids='SNMPv2-SMI::enterprises.9.3.6.3.0')
+				switch['serial'] = self.getoids[switch['model']](switch['IPaddress'],self.community)
+				# switch['serial'] = serialnum.value
+				if self.debug:
+					print('serial number for', switch['IPaddress'], 'is', switch['serial'])
+			except Exception:
+				print('error while getting serial for switch', switch['IPaddress'])
+				if self.debug:
+					traceback.print_exc()
+
+
+	def ssh_opensession(self):
+		for switch in self.switches:
+			try:
+				self._ssh_opensession(switch)
+			except Exception as e:
+				print(e)
+				if self.debug:
+					traceback.print_exc()
+
+
+	def prepupgrade(self):
+		for switch in self.switches:
+			if switch['IPaddress'] in self.upgrades:
+				try:
+					self._prepupgrade(switch)
+				except Exception as e:
+					print(e)
+					traceback.print_exc()
+
+
+	def tftp_replace(self):
+		for switch in self.switches:
+			if switch['IPaddress'] not in self.upgrades:
+				try:
+					self._tftp_replace(switch,time=17)
+				except Exception as e:
+					#traceback.print_exc()
+					if self.debug:
+						print('ERROR: ' + str(e))
+
+
+	def tftp_startup(self):
+		'''trys to pull a configuration from the given tftp server. the tftp_startup will first
+		try and get a config based on the serial number in a serialnum-conf format in the tftpboot/autoprov/ folder
+		if that fails then it checks in the base /tftpboot/ folder for a config that is the same as the feedport description 
+		and in the event that fails it will look in the /tftpboot/ folder for a model specific base config. 
+		 '''
+		for switch in self.switches:
+			#if switch['IPaddress'] in self.upgrades:
+				try:
+					print('\n## ' + switch['IPaddress'] + '\n')
+					self._tftp_startup(switch)
+					print('Config transfered successfully!')
+				except Exception as e:
+					print(e)
+					#traceback.print_exc()
+					#if self.debug:
+					#	print('ERROR: ' + str(e))
+
+
+	def reboot_save(self):
+		for switch in self.switches:
+			try:
+				switch['session'].sendreload('no')
+			except Exception as e:
+				#traceback.print_exc()
+				if self.debug:
+					print('ERROR: ' + str(e))
+
+
+	def generate_rsa(self):
+		for switch in self.switches:
+			try:
+				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
+				self._gen_rsa(switch,logfilename=logfilename)
+			except Exception as e:
+				print(e)
+				if self.debug:
+					with open(logfilename, "r") as f:
+						print(f.read())
