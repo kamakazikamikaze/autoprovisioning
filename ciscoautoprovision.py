@@ -35,37 +35,37 @@ except NameError:
 	pass
 
 def generate_config(filename='autoProv.confg'):
-		d = {
-			'target firmware':{
-				'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
-				'C3560CG': 'c3560c405ex-universalk9-mz.150-2.SE.bin',
-				'C3560CX': 'c3560cx-universalk9-mz.152-4.E1.bin',
-				'C3560G': 'c3560-ipbasek9-mz.122-55.SE10.bin',
-				'C3560V2': 'c3560-ipbasek9-mz.122-55.SE10.bin',
-				'C3560X': 'c3560e-universalk9-mz.122-55.SE3.bin',
-				'C3750': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-				'C3750G': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-				'C3750V2': 'c3750-ipbasek9-mz.122-55.SE9.bin',
-				'C3750X': 'c3750e-ipbasek9-mz.150-2.SE9.bin',
-				'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
-				'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
-			},
-			'debug':'1',
-			'debug print':'0',
-			'log file':'autoprov.log',
-			'output dir':'./output/',
-			'default rwcommunity': 'private',
-			'switch username': 'default',
-			'switch password': 'l4y3r2',
-			'switch enable': 'p4thw4y',
-			'tftp server': '10.0.0.254',
-			'telnet timeout': 20,
-			'production rwcommunity' : ''
-		}
-		with open('./cfg/' + filename, 'w') as dc:
-			json.dump(d, dc, indent=4, sort_keys=True)
-		logging.getLogger('CAP')
-		logging.debug('Config generated to %s', filename)
+	d = {
+		'target firmware':{
+			'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+			'C3560CG': 'c3560c405ex-universalk9-mz.150-2.SE.bin',
+			'C3560CX': 'c3560cx-universalk9-mz.152-4.E1.bin',
+			'C3560G': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+			'C3560V2': 'c3560-ipbasek9-mz.122-55.SE10.bin',
+			'C3560X': 'c3560e-universalk9-mz.122-55.SE3.bin',
+			'C3750': 'c3750-ipbasek9-mz.122-55.SE9.bin',
+			'C3750G': 'c3750-ipbasek9-mz.122-55.SE9.bin',
+			'C3750V2': 'c3750-ipbasek9-mz.122-55.SE9.bin',
+			'C3750X': 'c3750e-ipbasek9-mz.150-2.SE9.bin',
+			'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
+			'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
+		},
+		'debug':'1',
+		'debug print':'0',
+		'log file':'autoprov.log',
+		'output dir':'./output/',
+		'default rwcommunity': 'private',
+		'switch username': 'default',
+		'switch password': 'l4y3r2',
+		'switch enable': 'p4thw4y',
+		'tftp server': '10.0.0.254',
+		'telnet timeout': 20,
+		'production rwcommunity' : ''
+	}
+	with open('./cfg/' + filename, 'w') as dc:
+		json.dump(d, dc, indent=4, sort_keys=True)
+	logging.getLogger('CAP')
+	logging.debug('Config generated to %s', filename)
 
 
 class CiscoAutoProvision:
