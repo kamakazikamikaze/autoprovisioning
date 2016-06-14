@@ -334,6 +334,7 @@ class CiscoAutoProvision:
 			self._tftp_startup(switch)
 			# self._tftp_replace(switch,time=15)
 			switch['session'].sendreload('no')
+			self._msg.put((logging.INFO, '[%s] Reload command sent. Change feed on [%s] to trunk mode NOW!', switch['IPaddress'], switch['neighbors'].keys()[0]))
 			if self._wait(switch['new IPaddress'], timeout=timeout):
 				self._msg.put((logging.INFO, '[%s] Configuration successfully reloaded and is now reachable!', switch['new IPaddress']))
 			else:
