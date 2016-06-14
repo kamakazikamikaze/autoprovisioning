@@ -3,7 +3,6 @@ from __future__ import with_statement # Required in 2.5
 import paramiko
 import time
 import sys
-import os
 import signal
 from contextlib import contextmanager
 
@@ -80,12 +79,6 @@ class ciscoUpgrade:
 		if verbose:
 			return receive_buffer
 
-	def ping(self,host):
-		ping_command = "ping -W1 -c 1 " + host + " > /dev/null 2>&1 "
-		response = os.system(ping_command)
-		#Note:response is 1 for fail; 0 for success;
-		return not response
-
 
 	def tftp_setup(self):
 		#speed up the TFTP transfer
@@ -142,22 +135,23 @@ class ciscoUpgrade:
 
 
 	def sendreload(self, yesno='yes'): # Give the option to not save running config
-		if self.debug:
-			print("rebooting")
+		# if self.debug:
+		# 	print("rebooting")
 		try:
 			self._sendreceive("reload \r","[confirm]",yesno)
 			self._sendreceive('\r','')
 			self.shell.keep_this.close()
 		except Exception as e:
 			if 'Socket is closed' in str(e):
-				'Rebooted successfully!!'
-		if self.debug:
-			print("\n")
+				# 'Rebooted successfully!!'
+				pass #??
+		# if self.debug:
+		# 	print("\n")
 
 
 	def tftp_getstartup(self,filename):
-		if self.debug:
-			print('tftp getting startup config ' + filename)
+		# if self.debug:
+		# 	print('tftp getting startup config ' + filename)
 		self._sendreceive('copy tftp://' + self.tftpserver + filename + ' startup-config\r',']?',verbose=True)
 		out = self._sendreceive('\r','#',verbose=True)
 		if 'Error' in out:
@@ -169,16 +163,15 @@ class ciscoUpgrade:
 
 
 	def tftp_replaceconf(self,timeout=17):
-		if self.debug:
-			print('replacing running config with startup')
-			#print('replacing config file via tftp')
+		# if self.debug:
+		# 	print('replacing running config with startup')
 		try:
 			with time_limit(timeout):
-				self._sendreceive('configure replace nvram:startup-config force ignorecase\r','#',verbose=True)		
+				# self._sendreceive('configure replace nvram:startup-config force ignorecase\r','#',verbose=True)		
+				self._sendreceive('configure memory\r','#',verbose=True)		
 		except TimeoutException:
-			if self.debug:
-				print('\nconfigure replace successfully called!(probably)')
-				#print('\noutput:\n' + out)
+			# if self.debug:
+			# 	print('\nconfigure replace successfully called!(probably)')
 			return True
 		else:
 			raise Exception('configure replace was not successfull.')

@@ -1,7 +1,6 @@
 from __future__ import print_function
 from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr  #, gethostbyname
-# from getpass import getpass, getuser
 import logging
 from time import sleep
 import pexpect
@@ -26,8 +25,8 @@ try:    # Python 3 compatibility
 	range = xrange
 	import copy_reg
 	import types
-	def _reduce_method(m):
-		if m.im_self is None:
+	def _reduce_method(m):  # Allows instances to be pickled/serialized.
+		if m.im_self is None:  # Note that this is not necessary in Python 3
 			return getattr, (m.im_class, m.im_func.func_name)
 		else:
 			return getattr, (m.im_self, m.im_func.func_name)
@@ -70,6 +69,7 @@ def generate_config(filename='autoProv.confg'):
 
 
 class CiscoAutoProvision:
+
 	def __init__(self,configfile):
 		self.pver3 = (sys.version_info > (3, 0))
 		if not self.pver3:
@@ -92,6 +92,14 @@ class CiscoAutoProvision:
 
 
 	def __getstate__(self):
+		# When the instance object is being serialized, this method is called.
+		# Since the logging library is not multiprocessing.Pool-friendly, it
+		# causes the Pool to be terminated immediately. While we may consider
+		# spawning processes instead of using pools in the future, it still gives
+		# a good example of how to exclude certain values/properties in a "hacky"
+		# kind of way. Here we're creating a dictionary (which is serializable)
+		# and removing the saved logger from it. This allows Pool to use our
+		# instance and move along.
 		d = dict(self.__dict__)
 		del d['logger']
 		return d
@@ -249,42 +257,6 @@ class CiscoAutoProvision:
 		self.logger.debug(pformat(self.switches))
 
 
-	# def search_from_syslogs(self,filename='/var/log/cisco/cisco.log'):
-	# 	try:
-	# 		results = []
-	# 		errs = set()
-	# 		with open(filename, 'r+b') as f:
-	# 			log = mmap.mmap(f.fileno(), 0)
-	# 			res = set(re.findall(r'null\-[\w\d\.\-]+', log))
-	# 			for s in res:
-	# 				host = {}
-	# 				host['hostname'] = s
-	# 				try:
-	# 					host['IPaddress'] = gethostbyname(s)
-	# 					host['neighbors'] = {}
-	# 					neighbors = []
-	# 					for r in [re.findall(r'(?<=, with )([\d\w\-\.\/]+ [\d\w\-\.\/]+)', x) for x in re.findall(r'.*' + re.escape(s) + r'.*CDP.*', log)]:
-	# 						neighbors.extend(r)
-	# 					neighbors = list(set(neighbors))
-	# 					for neighbor in neighbors:
-	# 						neighbor = neighbor.split()
-	# 						if neighbor[0] in host['neighbors'].keys():
-	# 							host['neighbors'][neighbor[0]].append(neighbor[1])
-	# 						else:
-	# 							host['neighbors'][neighbor[0]] = [neighbor[1]]
-	# 					# host['neighbors'] = neighbors
-	# 					results.append(host)
-	# 				except:
-	# 					if s not in list(errs):
-	# 						errs.add(s)
-	# 						self.logger.debug('Cannot resolve hostname: %s', s)
-	# 		#self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
-	# 		self.switches = results
-	# 		pprint(self.switches)
-	# 	except Exception as e:
-	# 		self.logger.error('Error occurred: %s', e, exc_info=True)
-
-
 	def run(self):
 		'''
 		Full provisioning process
@@ -308,8 +280,17 @@ class CiscoAutoProvision:
 					self.logger.log(*log[0], **log[1])
 				else:
 					self.logger.log(*log)
-
-		# p.join()
+		p.join()
+		# Extra safety net, just in case an error kills the pool prematurely.
+		# The pool closed on me early last night and finished the script, however
+		# a worker was still TFTP'ing (and printing out) in the background
+		while not self._msg.empty():
+			if not self._msg.empty():
+				log = self._msg.get()
+				if type(log[-1]) is dict:  # Contains `exc_info=True`
+					self.logger.log(*log[0], **log[1])
+				else:
+					self.logger.log(*log)
 
 
 	def autoupgrade(self, switch):
@@ -317,8 +298,12 @@ class CiscoAutoProvision:
 			# logger = logging.getLogger('CAP.' + switch['hostname'].split('.')[0])
 			# logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 			# self.logger.info('Beginning provisioning process')
-			# self.logger.info('[%s]Beginning provisioning process', switch['IPaddress'])
-			self._msg.put((logging.INFO, '[%s]Beginning provisioning process', switch['IPaddress']))
+			# self.logger.info('[%s] Beginning provisioning process', switch['IPaddress'])
+			# Jul 14, 2016: C3850 averages ~8.5mins to reboot (not upgrading)
+			# Since spanning-tree must also discover VLAN routes, ~2 minutes
+			# should be added for it to finish mapping the network
+			timeout = 600
+			self._msg.put((logging.INFO, '[%s] Beginning provisioning process', switch['IPaddress']))
 			try:
 				self._get_model(switch)
 				self._get_serial(switch)
@@ -330,7 +315,9 @@ class CiscoAutoProvision:
 				# logger.debug('Could not access neighbor switch')
 				# self.logger.debug('[%s] Could not access neighbor switch', switch['IPaddress'])
 				self._msg.put((logging.DEBUG, '[%s] Could not access neighbor switch', switch['IPaddress']))
-			#generate RSA keys
+			# Generate RSA keys. Since we're replacing the startup config, and
+			# RSA keys require a "write mem" to be saved, it's okay to save the
+			# running config to flash
 			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
 			self._gen_rsa(switch,logfilename=logfilename)
 			# open ssh session
@@ -342,16 +329,15 @@ class CiscoAutoProvision:
 				# to-be/startup-config, set the target boot image,
 				# then save changes after applying the reboot command
 				self._prepupgrade(switch)
-				self._tftp_startup(switch)
-				# reboot
-				switch['session'].sendreload('no')
 				# IOS-XE (3750X?, 3850, 4506) take a long time to upgrade
-				self._wait(switch['new IPaddress'], timeout=1200)
-				self._gen_rsa(switch, logfilename=logfilename)
+				timeout = 1200
+			self._tftp_startup(switch)
+			# self._tftp_replace(switch,time=15)
+			switch['session'].sendreload('no')
+			if self._wait(switch['new IPaddress'], timeout=timeout):
+				self._msg.put((logging.INFO, '[%s] Configuration successfully reloaded and is now reachable!', switch['new IPaddress']))
 			else:
-				self._tftp_startup(switch)
-				self._tftp_replace(switch,time=15)
-				self._wait(switch['new IPaddress'])
+				self._msg.put((logging.CRITICAL, '[%s] Cannot reach via IP after loading startup-config in memory!', switch['new IPaddress']))
 			#continual ping
 		except Exception as e:
 			# self.logger.error('Error occurred: %s', e, exc_info=True)
@@ -687,6 +673,7 @@ class CiscoAutoProvision:
 		s.expect('#')
 		s.sendline('exit')
 		s.expect('#')
+		self._msg.put((logging.DEBUG, '[%s] Saving RSA keys (and running-config)...', switch['IPaddress']))
 		s.sendline('write mem')
 		s.expect('#')
 		s.logfile.close()
@@ -738,6 +725,7 @@ class CiscoAutoProvision:
 		self._msg.put((logging.WARNING, '[%s] Timed out!', target))
 		return False
 	
+
 	getoids = {
 		'C4506': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
 		'C4506R': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
@@ -756,6 +744,7 @@ class CiscoAutoProvision:
 
 
 class Helper:
+
 	def __init__(self,tftp_server='10.0.0.254'):
 		if self._ping_(tftp_server):
 			self.server = tftp_server
