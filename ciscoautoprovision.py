@@ -194,7 +194,8 @@ class CiscoAutoProvision:
 			sys.exit("An error occurred while parsing the config file: " + str(e))
 
 	
-	def search(self,target='http://localhost',index='logstash-autoprovision',time_minutes=60,port=9200): #,authenticate=False 
+	def search(self,target='http://localhost',index='logstash-autoprovision',time_mins=5,port=9200): #,authenticate=False 
+		self.switches = []
 		if port is None:
 			port = ''
 		else:
@@ -217,7 +218,7 @@ class CiscoAutoProvision:
 					'must': [{
 						'range': {
 							'@timestamp': {
-								'gte': 'now-' + str(time_minutes) + 'm',
+								'gte': 'now-' + str(time_mins) + 'm',
 								'lte': 'now'
 							}
 						}
@@ -233,6 +234,7 @@ class CiscoAutoProvision:
 		hits = result_dict['hits']['hits']
 		results = []
 		errs = set()
+
 		for log in hits:
 			try:
 				host = {}
@@ -246,21 +248,36 @@ class CiscoAutoProvision:
 				self.logger.error(log['_source']['host'], exc_info=True)
 				if log['_source']['host'] not in list(errs):
 					errs.add(log['_source']['host'])
-		self.switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
-		for switch in self.switches:
+		temp_switches = [dict(t) for t in set([tuple(d.items()) for d in results])]
+		sl = {}
+		for switch in temp_switches:
+			ip = switch['IPaddress'].encode()
+			switch[ip] = ip
+			sl[ip] = {}
+			sl[ip]['IPaddress'] = switch['IPaddress']
+			sl[ip].setdefault('hostname','')
+			sl[ip].setdefault('neighbors',{})
+			if switch['nei_raw'].encode().split():
+				sl[ip]['neighbors'].setdefault(switch['nei_raw'].encode().split()[0],[])
+		#pprint(sl)
+		for switch in temp_switches:
 			try:
-				switch['hostname'] = gethostbyaddr(switch['IPaddress'])[0]
-				switch['neighbors'] = {}
+				ip = switch['IPaddress'].encode()
+				hostname = gethostbyaddr(ip)[0]
+				sl[ip]['hostname'] = hostname
 				neighbor = switch['nei_raw'].encode().split()
-				n = neighbor.pop(0)
-				switch['neighbors'].setdefault(n,[])
-				for nei in neighbor:
-					switch['neighbors'][n].append(nei)
+				if neighbor:
+					n = neighbor.pop(0)
+					sl[ip]['neighbors'].setdefault(n,[])
+					for nei in neighbor:
+						sl[ip]['neighbors'][n].append(nei)
 				del switch['nei_raw']
 			except:
 				self.logger.error(switch, exc_info=True)
 				self.logger.debug('could not find hostname for ' + switch['IPaddress'])
 		self.logger.debug(pformat(self.switches))
+		for k,v in sl.iteritems():
+			self.switches.append(v)
 
 
 	def run(self):
