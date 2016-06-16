@@ -18,6 +18,7 @@ import tempfile
 import string
 import random
 import ciscoupgrade as cup
+import sqlite3 as sql
 
 
 try:    # Python 3 compatibility
@@ -33,6 +34,7 @@ try:    # Python 3 compatibility
 	copy_reg.pickle(types.MethodType, _reduce_method)
 except NameError:
 	pass
+
 
 def generate_config(filename='autoProv.confg'):
 	d = {
@@ -52,6 +54,7 @@ def generate_config(filename='autoProv.confg'):
 		},
 		'debug':'1',
 		'debug print':'0',
+		'lockfile folder':'./cfg/',
 		'log file':'autoprov.log',
 		'output dir':'./output/',
 		'default rwcommunity': 'private',
@@ -108,13 +111,6 @@ class CiscoAutoProvision:
 	def __setstate__(self, d):
 		self.__dict__.update(d)
 		
-
-	def _rem(self, address):
-		try:
-			self._remaining.remove(address)
-		except:
-			self._msg.put(((logging.WARNING, "ERROR OCCURRED!"), dict(exc_info=True)))
-
 
 	def _setuplogger(self):
 		self.loglevel = logging.DEBUG if self.debug else logging.INFO
@@ -173,6 +169,8 @@ class CiscoAutoProvision:
 				self.logfile = 'autoprov.log'
 			if data['default rwcommunity']:
 				self.community = data['default rwcommunity']
+			if data['lockfile folder']:
+				self._lockdir = data['lockfile folder']
 			if data['output dir']:
 				self.output_dir = data['output dir']
 			if data['production rwcommunity']:
@@ -289,13 +287,16 @@ class CiscoAutoProvision:
 		# logger = multiprocessing.log_to_stderr()
 		# logger.setLevel(self.loglevel)
 		# logger.info('Initializing pool')
-		# p = multiprocessing.Pool(initializer=multiprocessing_logging.install_mp_handler)
 		p = Pool()
 		self._remaining = []
 		for switch in self.switches:
-			self._remaining.append(switch['IPaddress'])
-			self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
-			progress = p.apply_async(self.autoupgrade, (switch,), callback=self._rem)#, callback=self._decr)  # Python 3 has an error_callback. Nice...
+			try:
+				self._lock(switch)
+				self._remaining.append(switch['IPaddress'])
+				self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
+				progress = p.apply_async(self.autoupgrade, (switch,), callback=self._unlock)#, callback=self._decr)  # Python 3 has an error_callback. Nice...
+			except sql.IntegrityError:
+				pass
 		p.close()
 		while not progress.ready() or not self._msg.empty():
 			if not self._msg.empty():
@@ -316,6 +317,7 @@ class CiscoAutoProvision:
 				else:
 					self.logger.log(*log)
 		self.logger.info('Provisioning complete. See log for details.')
+		# self._unlock()
 
 
 	def autoupgrade(self, switch):
@@ -366,16 +368,19 @@ class CiscoAutoProvision:
 			self._msg.put((logging.INFO, '[%s] Reload command sent. Change feed on [%s] to trunk mode NOW!', switch['IPaddress'], switch['neighbors'].keys()[0]))
 			if self._wait(switch['new IPaddress'], timeout=timeout):
 				self._msg.put((logging.INFO, '[%s] Configuration successfully reloaded and is now reachable!', switch['new IPaddress']))
+				switch['success'] = True
 			else:
 				self._msg.put((logging.CRITICAL, '[%s] Cannot reach via IP after loading startup-config in memory!', switch['new IPaddress']))
+				switch['success'] = False
 			#continual ping
 		except Exception as e:
 			# self.logger.error('Error occurred: %s', e, exc_info=True)
 			# self.logger.error('[%s] Error occurred: %s', switch['IPaddress'], e, exc_info=True)
 			self._msg.put(((logging.ERROR, '[%s] Error occurred: %s', switch['IPaddress'], e), dict(exc_info=True)))
+			switch['success'] = False
 		finally:
 			self._msg.put((logging.DEBUG, '[%s] Removing from queue', switch['IPaddress']))
-			return switch['IPaddress']
+			return switch
 
 
 	def _get_model(self,switch):
@@ -792,6 +797,24 @@ class CiscoAutoProvision:
 			# logger.info('RSA key was imported successfully!')
 			# self.logger.info('[%s] RSA key was imported successfully!', switch['IPaddress'])
 			self._msg.put((logging.INFO, '[%s] RSA key was imported successfully!', switch['IPaddress']))
+
+
+	def _lock(self, address):
+		# while True:
+		# 	try:
+		# 		pass
+		# 	except sql.OperationalError:
+		# 		pass
+		pass
+
+
+	def _unlock(self):
+		# while True:
+		# 	try:
+		# 		pass
+		# 	except sql.OperationalError:
+		# 		pass
+		pass
 
 
 	def _wait(self, target, cycle=5, timeout=300):
