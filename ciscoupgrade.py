@@ -1,6 +1,7 @@
 from __future__ import print_function
 from __future__ import with_statement # Required in 2.5
 import paramiko
+import pexpect
 import time
 import sys
 import signal
@@ -104,7 +105,7 @@ class ciscoUpgrade:
 			#destination host filename [iosversion]?
 			output = self._sendreceive('\r','#',verbose=True)
 			if not 'Error' in output:
-				successful = True
+				successful = self.verifyimage()
 			else:
 				attempts += 1
 		if not successful and attempts >= 5:
@@ -115,7 +116,9 @@ class ciscoUpgrade:
 		'''Check image for errors. Allow caller function to dictate number of attempts'''
 		output = self._sendreceive('verify flash:' + self.bin + '\r', '#',verbose=True)
 		if 'Error' in output:
-			raise VerifyException('Bad image')
+			# raise VerifyException('Bad image')
+			return False
+		return True
 
 
 	def softwareinstall(self):
@@ -183,16 +186,7 @@ class ciscoUpgrade:
 
 class c38XXUpgrade(ciscoUpgrade):
 	
-	def __init__(self,host,tftpserver,binary_file,username,password,enable_password,debug):
-		ciscoUpgrade.__init__(self,host=host,model='C3850',tftpserver=tftpserver,binary_file=binary_file,username=username,password=password,enable_password=enable_password,debug=debug)
-	
-
-	def cleansoftware(self):
-		# Clear out old software. We can place this at start of loop if desired
-		self._sendreceive('delete /force /recursive flash:\r', '#', verbose=False)
-
-
-	def softwareinstall(self,iOS_TimingFlag = "on-reboot"):		
+	def softwareinstall(self):		
 		''' prepares and tells the switch to upgrade "on-reboot" by default'''
 		# For whatever asinine reason, Cisco requires a complete reload of the
 		# system if it is operating in BUNDLE mode so you can use the `software
@@ -212,10 +206,6 @@ class c38XXUpgrade(ciscoUpgrade):
 
 
 class c45xxUpgrade(ciscoUpgrade):
-	
-	def __init__(self,host,tftpserver,binary_file,username,password,enable_password,debug):
-	 	ciscoUpgrade.__init__(self,host=host,model='C4506',tftpserver=tftpserver,binary_file=binary_file,username=username,password=password,enable_password=enable_password,debug=debug)
-
 
 	def tftp_getimage(self):
 		'''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
@@ -235,14 +225,15 @@ class c45xxUpgrade(ciscoUpgrade):
 				'No such file or directory on server!'
 			else:	
 				raise Exception('Too many failed TFTP attempts')
-		#print(self.bin)
 
 
 	def verifyimage(self):
 		'''Check image for errors. Allow caller function to dictate number of attempts'''
 		output = self._sendreceive('verify bootflash:' + self.bin + '\r', '#',verbose=True)
 		if 'Error' in output:
-			raise VerifyException('Bad image')
+			# raise VerifyException('Bad image')
+			return False
+		return True
 
 
 	def cleansoftware(self):
@@ -261,3 +252,187 @@ class c45xxUpgrade(ciscoUpgrade):
 	def blastvlan(self):
 		# VLAN table is located somewhere else and needs to be removed
 		self._sendreceive('erase cat4000_flash:\r', '#')
+
+
+class ciscoInsecureUpgrade:
+	# REMEMBER: pexpect use regex to search the buffer! Escape special characters
+	#           when passing strings to `expect()`
+	def __init__(self, host, tftpserver, binary_file, timeout,
+				logfilename, pver3, username='default', password='l4y3r2',
+				enable_password=None, debug=True):
+		self.host = host
+		if pver3:
+			self.shell = pexpect.spawnu('telnet ' + host)
+		else:
+			self.shell = pexpect.spawn('telnet ' + host)
+		self.shell.expect('Username: ')
+		self.shell.sendline(username)
+		self.shell.expect('Password: ')
+		self.shell.sendline(password)
+		self.bin = binary_file
+		self.tftpserver = tftpserver
+		self.debug = debug
+		self.shell.logfile = open(logfilename, 'w')
+		if enable_password:
+			self.shell.expect('>')
+			self.shell.sendline('enable')
+			self.shell.expect('Password: ')
+			self.shell.sendline(enable_password)
+		self.shell.expect('#')
+		self.shell.sendline('terminal length 0')
+		self.shell.expect('#')
+		self.shell.sendline('terminal width 0')
+		self.shell.expect('#')
+
+
+	def tftp_setup(self):
+		# "Speed up" the TFTP transfer
+		self.shell.sendline('config t')
+		self.shell.expect(')#')
+		self.shell.sendline('ip tftp blocksize 8192')
+		self.shell.expect('#')
+		self.shell.sendline('end')
+		self.shell.expect('#')
+
+
+	def cleansoftware(self):
+		# Clear out old software. We can place this at start of loop if desired
+		self.shell.sendline('delete /force /recursive flash:*')
+		self.shell.expect('#')
+		
+		
+	def tftp_getimage(self):
+		'''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
+		successful = False
+		attempts = 0
+		while not successful and attempts < 5:
+			#if file exists, a 'Do you want to over write? [confirm]' is displayed
+			self.shell.sendline('copy tftp://' + self.tftpserver +'/bin/' + self.bin + ' flash:' + self.bin)
+			while True:
+				i = self.shell.expect(['\?', '!', '#'], timeout=30)
+				if i == 0:
+					self.shell.sendline('')
+				elif i == 2:
+					break
+			# self.sendline('')
+			if not 'Error' in self.shell.before:
+				successful = self.verifyimage()
+			else:
+				attempts += 1
+		if not successful and attempts >= 5:
+			raise Exception('Too many failed TFTP attempts')
+
+
+	def verifyimage(self):
+		'''Check image for errors. Allow caller function to dictate number of attempts'''
+		self.shell.sendline('verify flash:' + self.bin)
+		self.shell.expect('#')
+		if 'Error' in self.shell.before:
+			return False
+			# raise VerifyException('Bad image')
+		return True
+
+
+	def softwareinstall(self):
+		self.shell.sendline('config t')
+		self.shell.expect('#')
+		self.shell.sendline('boot system \?')
+		self.shell.expect('#')
+		if 'switch' in self.shell.before:
+			self.shell.sendline('boot system switch all flash:/' + self.bin)
+		else:
+			self.shell.sendline('boot system flash:' + self.bin)
+		self.shell.sendline('end')
+		self.shell.expect('#')
+
+
+	def writemem(self, end=False):
+		if end:
+			self.shell.sendline('end')
+			self.shell.expect('#')
+		self.shell.sendline('write memory')
+		self.shell.expect('#')
+
+
+	def erasestartup(self):
+		self.shell.sendline('erase startup-config')
+		self.shell.expect('\[confirm\]')
+		self.shell.sendline('')
+		self.shell.expect('#')
+
+
+	def sendreload(self, yesno='yes'):
+		# if self.debug:
+		# 	print("rebooting")
+		self.shell.sendline('reload')
+		i = self.shell.expect(['\[yes/no\]','\[confirm\]'])
+		if not i:
+			self.shell.sendline(yesno)
+			self.shell.expect('\[confirm\]')
+		self.shell.sendline('')
+
+
+class ciu3850(ciscoInsecureUpgrade):
+
+	def softwareinstall(self):
+		# Rimed results:
+		#  * 60 seconds to expand binary bundle
+		#  * 75 seconds to copy package files
+		#  * 10 seconds from 'package files copied' alert to being finished
+		self.shell.sendline('software expand file flash:' + self.bin + ' to flash:')
+		self.shell.expect('Expanding')
+		self.shell.expect('Copying', timeout = 120)
+		self.shell.expect('#', timeout = 150)
+		self.shell.sendline('config t')
+		self.shell.expect(')#')
+		self.shell.sendline('boot system flash:packages.conf')
+		self.shell.expect('#')
+		self.writemem(True)
+
+
+class ciu4500(ciscoInsecureUpgrade):
+
+	def tftp_getimage(self):
+		'''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
+		successful = False
+		attempts = 0
+		while not successful and attempts < 5:
+			#if file exists, a 'Do you want to over write? [confirm]' is displayed
+			self.shell.sendline('copy tftp://' + self.tftpserver +'/bin/' + self.bin + ' bootflash:' + self.bin)
+			while True:
+				i = self.shell.expect(['\?', '!', '#'], timeout=30)
+				if i == 0:
+					self.shell.sendline('')
+				elif i == 2:
+					break
+			# self.sendline('')
+			if not 'Error' in self.shell.before:
+				successful = True
+			else:
+				attempts += 1
+		if not successful and attempts >= 5:
+			raise Exception('Too many failed TFTP attempts')
+
+
+	def cleansoftware(self):
+		# Clear out old software. We can place this at start of loop if desired
+		self.shell.sendline('delete /force /recursive bootflash:')
+		self.shell.expect('#')
+		
+
+	def softwareinstall(self):
+		self.shell.sendline('config t')
+		self.shell.expect(')#')
+		self.shell.sendline('boot system flash bootflash:/' + self.bin)
+		self.shell.expect('#')
+		self.writemem(True)
+
+
+	def verifyimage(self):
+		'''Check image for errors. Allow caller function to dictate number of attempts'''
+		self.shell.sendline('verify bootflash:' + self.bin)
+		self.shell.expect('#')
+		if 'Error' in self.shell.before:
+			return False
+			# raise VerifyException('Bad image')
+		return True

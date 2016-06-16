@@ -109,6 +109,12 @@ class CiscoAutoProvision:
 		self.__dict__.update(d)
 		
 
+	def _rem(self, address):
+		try:
+			self._remaining.remove(address)
+		except:
+			self._msg.put(((logging.WARNING, "ERROR OCCURRED!"), dict(exc_info=True)))
+
 	def _setuplogger(self):
 		self.loglevel = logging.DEBUG if self.debug else logging.INFO
 		# http://stackoverflow.com/a/9321890/1993468
@@ -269,9 +275,11 @@ class CiscoAutoProvision:
 		# logger.info('Initializing pool')
 		# p = multiprocessing.Pool(initializer=multiprocessing_logging.install_mp_handler)
 		p = Pool()
+		self._remaining = []
 		for switch in self.switches:
+			self._remaining.append(switch['IPaddress'])
 			self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
-			progress = p.apply_async(self.autoupgrade, (switch,))#, callback=self._decr)  # Python 3 has an error_callback. Nice...
+			progress = p.apply_async(self.autoupgrade, (switch,), callback=self._rem)#, callback=self._decr)  # Python 3 has an error_callback. Nice...
 		p.close()
 		while not progress.ready() or not self._msg.empty():
 			if not self._msg.empty():
@@ -291,6 +299,7 @@ class CiscoAutoProvision:
 					self.logger.log(*log[0], **log[1])
 				else:
 					self.logger.log(*log)
+		self.logger.info('Provisioning complete. See log for details.')
 
 
 	def autoupgrade(self, switch):
@@ -318,8 +327,12 @@ class CiscoAutoProvision:
 			# Generate RSA keys. Since we're replacing the startup config, and
 			# RSA keys require a "write mem" to be saved, it's okay to save the
 			# running config to flash
+			if not switch['crypto']:
+				# raise Exception('Not yet implemented!')
+				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + '-to_k9-log.txt'))
+				self._upgradefirst(switch,logfilename)
 			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
-			self._gen_rsa(switch,logfilename=logfilename)
+			self._send_rsa(switch,logfilename=logfilename)
 			# open ssh session
 			self._ssh_opensession(switch)
 			if switch['IPaddress'] in self.upgrades:
@@ -344,6 +357,9 @@ class CiscoAutoProvision:
 			# self.logger.error('Error occurred: %s', e, exc_info=True)
 			# self.logger.error('[%s] Error occurred: %s', switch['IPaddress'], e, exc_info=True)
 			self._msg.put(((logging.ERROR, '[%s] Error occurred: %s', switch['IPaddress'], e), dict(exc_info=True)))
+		finally:
+			self._msg.put((logging.DEBUG, '[%s] Removing from queue', switch['IPaddress']))
+			return switch['IPaddress']
 
 
 	def _get_model(self,switch):
@@ -393,24 +409,83 @@ class CiscoAutoProvision:
 		if model not in self.firmwares.keys():
 			raise Exception('model' + model + 'not found in firmware list!')
 			#TODO: make a way to add firmware
-		if type(softimage) is unicode and softimage in self.firmwares[model].lower():
+		elif type(softimage) is unicode and softimage in self.firmwares[model].lower() and (self._k9(softimage) and not '296' in model):
+			switch['crypto'] = True
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			# self.logger.debug('[%s] No upgrade needed. Target IOS: %s', switch['IPaddress'], switch['bin'])
 			self._msg.put((logging.DEBUG, '[%s] No upgrade needed. Target IOS: %s', switch['IPaddress'], switch['bin']))
-		elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage):
+		elif type(softimage) is list and all(x in self.firmwares[model].lower() for x in softimage) and (self._k9(softimage) and not '296' in model):
+			switch['crypto'] = True
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			# logger.debug('No upgrade needed. Target IOS: %s', switch['bin'])
 			# self.logger.debug('[%s] No upgrade needed. Target IOS: %s', switch['IPaddress'], switch['bin'])
 			self._msg.put((logging.DEBUG, '[%s] No upgrade needed. Target IOS: %s', switch['IPaddress'], switch['bin']))
 		else:
+			switch['crypto'] = self._k9(softimage)
 			switch['model'] = model
 			switch['bin'] = self.firmwares[model]
 			self.upgrades.append(switch['IPaddress'])
 			# self.logger.debug('Upgrade needed. Target IOS: %s', switch['bin'])
 			# self.logger.debug('[%s] Upgrade needed. Target IOS: %s', switch['IPaddress'], switch['bin'])
 			self._msg.put((logging.DEBUG, '[%s] Upgrade needed. Target IOS: %s', switch['IPaddress'], switch['bin']))
+
+
+	def _k9(self, image):
+		'''
+		Verify that the supplied IOS image supports Cryptography
+		'''
+		if type(image) is list:
+			return any(x for x in image if 'k9' in x.lower())
+		else:
+			return 'k9' in image.lower()
+
+
+	def _upgradefirst(self,switch,logfilename):
+		self._msg.put((logging.DEBUG, '[%s] Attempting to upgrade to K9 binary first', switch['IPaddress']))
+		# logger.debug('Opening telnet session...')
+		# self.logger.debug('[%s] Opening telnet session...', switch['IPaddress'])
+		self._msg.put((logging.DEBUG, '[%s] K9: Opening telnet session...', switch['IPaddress']))
+		d = dict(host=switch['IPaddress'], tftpserver=self.tftp,
+				username=self.suser, password=self.spasswd, 
+				logfilename=logfilename, pver=self.pver3,
+				binary_file=switch['bin'], timeout=self.telnettimeout,
+				enable_password=self.senable, debug=self.debug,
+				)
+		sess = None
+		if not self.ping(switch['IPaddress']):
+			raise Exception('host not reachable')
+		if switch['model'].startswith('C38'):
+			sess = cup.ciu3850(**d)
+		elif switch['model'].startswith('C45'):
+			sess = cup.ciu4500(**d)
+		else:
+			# logger.debug('Using default upgrade profile')
+			# self.logger.debug('[%s] Using default upgrade profile', switch['IPaddress'])
+			self._msg.put((logging.DEBUG, '[%s] K9: Using default upgrade profile', switch['IPaddress']))
+			sess = cup.ciscoUpgrade(**d)
+		# I won't try to catch errors. Let the autoupgrade method handle it
+		self._msg.put((logging.DEBUG, '[%s] K9: Setting up TFTP...', switch['IPaddress']))
+		sess.tftp_setup()
+		self._msg.put((logging.DEBUG, '[%s] K9: Clearing out old software...', switch['IPaddress']))
+		sess.cleansoftware()
+		self._msg.put((logging.DEBUG, '[%s] K9: Fetching and verifying image...', switch['IPaddress']))
+		sess.tftp_getimage()
+		# self._msg.put((logging.DEBUG, '[%s] K9: Verifying image...', switch['IPaddress']))
+		# sess.verifyimage()
+		self._msg.put((logging.DEBUG, '[%s] K9: Installing image...', switch['IPaddress']))
+		sess.softwareinstall()
+		self._msg.put((logging.DEBUG, '[%s] K9: Setting boot image...', switch['IPaddress']))
+		sess.writemem()
+		self._msg.put((logging.DEBUG, '[%s] K9: Erasing startup-config...', switch['IPaddress']))
+		sess.erasestartup()
+		self._msg.put((logging.DEBUG, '[%s] K9: Reloading switch!', switch['IPaddress']))
+		sess.sendreload('no')
+		self._msg.put((logging.DEBUG, '[%s] K9: Reload (probably) sent...', switch['IPaddress']))
+		if not self._wait(switch['IPaddress'], timeout=1200):
+			raise Exception('Switch did not come back online after upgrading it to a crypto version!')
+		self.upgrades.remove(switch['IPaddress'])
 
 
 	def _get_new_name(self,switch):
@@ -450,27 +525,22 @@ class CiscoAutoProvision:
 		# logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 		# logger.debug('Preparing SSH session')
 		# self.logger.debug('[%s] Preparing SSH session', switch['IPaddress'])
+		d = dict(host=switch['IPaddress'], tftpserver=self.tftp,
+				username=self.suser, password=self.spasswd,
+				binary_file=switch['bin'],
+				enable_password=self.senable, debug=self.debug)
 		self._msg.put((logging.DEBUG, '[%s] Preparing SSH session', switch['IPaddress']))
 		if not self.ping(switch['IPaddress']):
 			raise Exception('host not reachable')
 		if switch['model'].startswith('C38'):
-			switch['session'] = cup.c38XXUpgrade(host=switch['IPaddress'],tftpserver=self.tftp,
-				username=self.suser,password=self.spasswd,
-				binary_file=switch['bin'],
-				enable_password=self.senable, debug=self.debug)
+			switch['session'] = cup.c38XXUpgrade(**d)
 		elif switch['model'].startswith('C45'):
-			switch['session'] = cup.c45xxUpgrade(host=switch['IPaddress'],tftpserver=self.tftp,
-				username=self.suser,password=self.spasswd,
-				binary_file=switch['bin'],
-				enable_password=self.senable, debug=self.debug)
+			switch['session'] = cup.c45xxUpgrade(**d)
 		else:
 			# logger.debug('Using default upgrade profile')
 			# self.logger.debug('[%s] Using default upgrade profile', switch['IPaddress'])
 			self._msg.put((logging.DEBUG, '[%s] Using default upgrade profile', switch['IPaddress']))
-			switch['session'] = cup.ciscoUpgrade(host=switch['IPaddress'],tftpserver=self.tftp,
-				username=self.suser,password=self.spasswd,
-				binary_file=switch['bin'],model=switch['model'],
-				enable_password=self.senable, debug=self.debug)	
+			switch['session'] = cup.ciscoUpgrade(**d)	
 
 
 	def _prepupgrade(self,switch):
@@ -603,7 +673,7 @@ class CiscoAutoProvision:
 		return success
 
 
-	def _gen_rsa(self,switch,logfilename):
+	def _send_rsa(self,switch,logfilename):
 		# logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 		# self.logger.debug('[%s] Attempting to setup RSA keys', switch['IPaddress'])
 		self._msg.put((logging.DEBUG, '[%s] Attempting to setup RSA keys', switch['IPaddress']))
@@ -612,7 +682,7 @@ class CiscoAutoProvision:
 		else:
 			s = pexpect.spawn('telnet ' + switch['IPaddress'])
 		s.timeout = self.telnettimeout
-		s.logfile = open(logfilename, "w")
+		s.logfile = open(logfilename, 'w')
 		# logger.debug('Opening telnet session...')
 		# self.logger.debug('[%s] Opening telnet session...', switch['IPaddress'])
 		self._msg.put((logging.DEBUG, '[%s] Opening telnet session...', switch['IPaddress']))
@@ -644,7 +714,7 @@ class CiscoAutoProvision:
 			# self.logger.debug('[%s] Erasing all existing keys...', switch['IPaddress'])
 			self._msg.put((logging.DEBUG, '[%s] Erasing all existing keys...', switch['IPaddress']))
 			s.sendline('crypto key zeroize rsa')
-			s.expect(']: ')
+			s.expect('\]: ')
 			s.sendline('yes')
 			s.expect('#')
 		if not 'rsa' in switch.keys():
@@ -897,7 +967,7 @@ class CapTest(CiscoAutoProvision):
 		for switch in self.switches:
 			try:
 				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['IPaddress'] + 'log.txt'))
-				self._gen_rsa(switch,logfilename=logfilename)
+				self._send_rsa(switch,logfilename=logfilename)
 			except Exception as e:
 				self.logger.error('%s: %s', switch['IPaddress'], e)
 				# print(e)
