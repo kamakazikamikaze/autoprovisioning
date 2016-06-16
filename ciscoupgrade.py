@@ -34,9 +34,9 @@ class VerifyException(Exception):
 
 class ciscoUpgrade:
 
-	def __init__(self, host, model,tftpserver, binary_file, username='default', password='l4y3r2', enable_password=None, debug=True):
+	def __init__(self, host, tftpserver, binary_file, username='default',
+				password='l4y3r2', enable_password=None, debug=True):
 		self.host = host
-		self.model = model
 		self.bin = binary_file
 		self.tftpserver = tftpserver
 		self.debug = debug
@@ -288,7 +288,7 @@ class ciscoInsecureUpgrade:
 	def tftp_setup(self):
 		# "Speed up" the TFTP transfer
 		self.shell.sendline('config t')
-		self.shell.expect(')#')
+		self.shell.expect('\)#')
 		self.shell.sendline('ip tftp blocksize 8192')
 		self.shell.expect('#')
 		self.shell.sendline('end')
@@ -384,7 +384,7 @@ class ciu3850(ciscoInsecureUpgrade):
 		self.shell.expect('Copying', timeout = 120)
 		self.shell.expect('#', timeout = 150)
 		self.shell.sendline('config t')
-		self.shell.expect(')#')
+		self.shell.expect('\)#')
 		self.shell.sendline('boot system flash:packages.conf')
 		self.shell.expect('#')
 		self.writemem(True)
@@ -422,7 +422,7 @@ class ciu4500(ciscoInsecureUpgrade):
 
 	def softwareinstall(self):
 		self.shell.sendline('config t')
-		self.shell.expect(')#')
+		self.shell.expect('\)#')
 		self.shell.sendline('boot system flash bootflash:/' + self.bin)
 		self.shell.expect('#')
 		self.writemem(True)
