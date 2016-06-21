@@ -2,7 +2,7 @@ from __future__ import print_function
 from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr  #, gethostbyname
 import logging
-from time import sleep
+from time import localtime, strftime, sleep
 import pexpect
 import requests
 from pprint import pformat
@@ -52,6 +52,7 @@ def generate_config(filename='autoProv.confg'):
 			'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 			'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 		},
+		'database' : '/srv/autoprovision',
 		'debug':'1',
 		'debug print':'0',
 		'lockfile folder':'./cfg/',
@@ -167,6 +168,8 @@ class CiscoAutoProvision:
 				self.logfile = data['log file']
 			else:
 				self.logfile = 'autoprov.log'
+			if data['database']:
+				self.database = data['database']
 			if data['default rwcommunity']:
 				self.community = data['default rwcommunity']
 			if data['lockfile folder']:
@@ -193,7 +196,7 @@ class CiscoAutoProvision:
 			sys.exit("An error occurred while parsing the config file: " + str(e))
 
 	
-	def search(self,target='http://localhost',index='logstash-autoprovision',time_mins=5,port=9200): #,authenticate=False 
+	def search(self,target='http://localhost',index='autoprovisioning',time_mins=5,port=9200): #,authenticate=False 
 		self.switches = []
 		if port is None:
 			port = ''
@@ -282,21 +285,20 @@ class CiscoAutoProvision:
 		Full provisioning process
 		'''
 		self.search()
+		if not self.switches:
+			self.logger.info('No switches require provisioning.')
+			return
 		# if self.switches:
 		self.logger.info('Starting Autoprovision process')
 		# logger = multiprocessing.log_to_stderr()
 		# logger.setLevel(self.loglevel)
 		# logger.info('Initializing pool')
 		p = Pool()
-		self._remaining = []
+		# self._remaining = []
 		for switch in self.switches:
-			try:
-				self._lock(switch)
-				self._remaining.append(switch['IPaddress'])
-				self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
-				progress = p.apply_async(self.autoupgrade, (switch,), callback=self._unlock)#, callback=self._decr)  # Python 3 has an error_callback. Nice...
-			except sql.IntegrityError:
-				pass
+			# self._lock(switch)
+			self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
+			progress = p.apply_async(self.autoupgrade, (switch,), callback=self._unlock)#, callback=self._decr)  # Python 3 has an error_callback. Nice...
 		p.close()
 		while not progress.ready() or not self._msg.empty():
 			if not self._msg.empty():
@@ -336,6 +338,11 @@ class CiscoAutoProvision:
 				self._get_serial(switch)
 			except EasySNMPTimeoutError:
 				raise Exception('Could not retrieve model and/or serial!')
+			# Had to move the lock into here. We want the serial to be the  table's
+			# primary key in the event the device appears with a different IP
+			# We don't want to catch the exception; we want to exit ASAP
+			# sql.IntegrityError, 
+			self._lock(switch)
 			try:
 				self._get_new_name(switch)
 			except EasySNMPTimeoutError:
@@ -373,6 +380,8 @@ class CiscoAutoProvision:
 				self._msg.put((logging.CRITICAL, '[%s] Cannot reach via IP after loading startup-config in memory!', switch['new IPaddress']))
 				switch['success'] = False
 			#continual ping
+		except sql.IntegrityError:
+			self._msg.put((logging.DEBUG, '[%s] Already being provisioned by another process', switch['IPaddress']))
 		except Exception as e:
 			# self.logger.error('Error occurred: %s', e, exc_info=True)
 			# self.logger.error('[%s] Error occurred: %s', switch['IPaddress'], e, exc_info=True)
@@ -674,7 +683,7 @@ class CiscoAutoProvision:
 				found_config = self._startupcfg(switch=switch,remotefilename=dir_prefix + filename)
 				if found_config:
 					self._msg.put((logging.INFO, '[%s] Using config that matches the serial number!', switch['IPaddress']))
-					switch['serial'] = [serial]
+					# switch['serial'] = [serial]
 					break
 		if not found_config and 'new name' in switch.keys():
 			# logger.info('No config matches serial number. Searching for one based on CDP neighbor\'s port description')
@@ -799,22 +808,74 @@ class CiscoAutoProvision:
 			self._msg.put((logging.INFO, '[%s] RSA key was imported successfully!', switch['IPaddress']))
 
 
-	def _lock(self, address):
-		# while True:
-		# 	try:
-		# 		pass
-		# 	except sql.OperationalError:
-		# 		pass
-		pass
+	def _lock(self, switch):
+		while True:
+			try:
+				device = (switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()))
+				db  = os.path.join(self.database, 'lockfile.db')
+				conn = sql.connect(db)
+				c = conn.cursor()
+				# Initialize tables, if not already existant
+				# When tables are created, the DB immediately commits them.
+				# Another process may, however, lock the table between CREATEs
+				c.execute('''CREATE TABLE IF NOT EXISTS devices
+				                (name text, ip text, model text, serial text primary key, date text)''')
+				c.execute('''CREATE TABLE IF NOT EXISTS locked
+				                (name text, ip text, model text, serial text primary key, date text)''')
+				# Lock device first; this will abort the provisioning process
+				# if another one is already working on it
+				c.execute('INSERT INTO locked VALUES (?,?,?,?,?)', device)
+				# Update the date info
+				c.execute('INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?)', device)
+				conn.commit()
+				break
+			# Database is currently locked; try again
+			except sql.OperationalError as e:
+				# Another process has locked the database. Try again
+				if 'locked' in str(e).lower():
+					pass
+				else:
+					raise e
+			finally:
+				conn.close()
 
 
-	def _unlock(self):
-		# while True:
-		# 	try:
-		# 		pass
-		# 	except sql.OperationalError:
-		# 		pass
-		pass
+	def _unlock(self, switch):
+		while True:
+			try:
+				db  = os.path.join(self.database, 'lockfile.db')
+				conn = sql.connect(db)
+				c = conn.cursor()
+				c.execute('''CREATE TABLE IF NOT EXISTS success
+				                (name text, ip text, model text, serial text primary key, date text, notify integer)''')
+				c.execute('''CREATE TABLE IF NOT EXISTS failure
+				                (name text, ip text, model text, serial text primary key, date text, attempts integer, notify integer)''')
+				# Even if it's not in the table for some reason, this won't 
+				# raise an error
+				c.execute('DELETE FROM locked WHERE serial = ?', (switch['serial'][0]))
+				if switch['success']:
+					# TODO: Notification of success/failure
+					device = (switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()), 'FALSE')
+					c.execute('INSERT OR REPLACE INTO success VALUES (?,?,?,?,?,?)', device)
+				else:
+					c.execute('SELECT * FROM failure WHERE serial = ?', (switch['serial'][0]))
+					d = c.fetchone()
+					if d:
+						c.execute('UPDATE failure SET attempts = attempts + 1, date = ? WHERE serial = ?', (strftime('%a %b %d %Y %H:%M:%S', localtime()), switch['serial'][0]))
+					else:
+						c.execute('INSERT INTO failure VALUES (?,?,?,?,?,?,?)',(switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()), 1, 'FALSE'))
+				conn.commit()
+				conn.close()
+				break
+			except sql.OperationalError as e:
+				if 'locked' in str(e).lower():
+					pass
+				else:
+					raise e
+			finally:
+				conn.close()
+
+		# pass
 
 
 	def _wait(self, target, cycle=5, timeout=300):
