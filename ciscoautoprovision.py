@@ -1,4 +1,5 @@
 from __future__ import print_function
+from alerts import emailAlert
 from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr  #, gethostbyname
 import logging
@@ -38,6 +39,15 @@ except NameError:
 
 def generate_config(filename='autoProv.confg'):
 	d = {
+		'alerts' : {
+			'type': 'email',
+			'endpoint': 'your.gate.com',
+			'secure': 0,
+			'port': 25,
+			'sender': 'no_reply@your.domain.com',
+			'recipients': ['webmaster@target.domain.com'],
+			'threshold': 5
+		},
 		'target firmware':{
 			'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
 			'C3560CG': 'c3560c405ex-universalk9-mz.150-2.SE.bin',
@@ -93,6 +103,7 @@ class CiscoAutoProvision:
 		self._setuplogger()
 		self.logger.debug('Class instance created.')
 		self._msg = Manager().Queue()
+		self._finished = Manager().Queue()
 
 
 	def __getstate__(self):
@@ -186,6 +197,17 @@ class CiscoAutoProvision:
 				self.senable = data['switch enable']
 			if data['tftp server']:
 				self.tftp = data['tftp server']
+			if 'alerts' in data.keys():
+				self.alerts = {}
+				self.alerts['type'] = data['alerts']['type']
+				self.alerts['endpoint'] = data['alerts']['endpoint']
+				self.alerts['sender'] = data['alerts']['sender']
+				self.alerts['recipients'] = data['alerts']['recipients']
+				self.alerts['threshold'] = data['alerts']['threshold']
+				self.alerts['secure'] = data['alerts']['secure']				
+			if 'username' in data.keys():
+				self.alerts['username'] = data['alerts']['username']
+				self.alerts['password'] = data['alerts']['password']
 			self._rsa_pass_size = 32 if not 'rsa pass size' in data.keys() else data['rsa pass size']
 			if int(data['telnet timeout']) < 5:
 				data['telnet timeout'] = 30
@@ -319,6 +341,7 @@ class CiscoAutoProvision:
 				else:
 					self.logger.log(*log)
 		self.logger.info('Provisioning complete. See log for details.')
+		self.sendalerts()
 		# self._unlock()
 
 
@@ -376,6 +399,7 @@ class CiscoAutoProvision:
 			if self._wait(switch['new IPaddress'], timeout=timeout):
 				self._msg.put((logging.INFO, '[%s] Configuration successfully reloaded and is now reachable!', switch['new IPaddress']))
 				switch['success'] = True
+				self._finished.put(switch['new name'])
 			else:
 				self._msg.put((logging.CRITICAL, '[%s] Cannot reach via IP after loading startup-config in memory!', switch['new IPaddress']))
 				switch['success'] = False
@@ -710,9 +734,18 @@ class CiscoAutoProvision:
 		if success:
 			with open(outputfile,'r+b') as f:
 				log = mmap.mmap(f.fileno(), 0)
-			results = re.findall(r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s(?:\d{1,3}\.){3}\d{1,3})', log)
-			switch['new IPaddress'] = map(lambda (g0,g1): g1, results)
-			log.close()
+			# Perhaps this isn't necessary, but I wanted to ensure the file
+			# would be closed in the event of an interrupt
+			try:
+				results = re.findall(r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s(?:\d{1,3}\.){3}\d{1,3})', log)
+				switch['new IPaddress'] = map(lambda (g0,g1): g1, results)
+				results = re.findall(r'hostname\s([\S]+)', log)
+				if results:
+					switch['hew name'] = results[0]
+			except Exception as e:
+				raise e
+			finally:
+				log.close()
 			# logger.debug('new ip address information: ' + str(results))
 			# self.logger.debug('[%s] New ip address: %s', switch['IPaddress'], switch['new IPaddress'])
 			self._msg.put((logging.DEBUG, '[%s] New ip address: %s', switch['IPaddress'], switch['new IPaddress']))
@@ -857,6 +890,7 @@ class CiscoAutoProvision:
 					# TODO: Notification of success/failure
 					device = (switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()), 'FALSE')
 					c.execute('INSERT OR REPLACE INTO success VALUES (?,?,?,?,?,?)', device)
+					c.execute('DELETE FROM failure WHERE serial = ?', (switch['serial'][0]))
 				else:
 					c.execute('SELECT * FROM failure WHERE serial = ?', (switch['serial'][0]))
 					d = c.fetchone()
@@ -914,6 +948,46 @@ class CiscoAutoProvision:
 		self._msg.put((logging.WARNING, '[%s] Timed out!', target))
 		return False
 	
+
+	def sendalerts(self):
+		devices = []
+		success = ''
+		failure = ''
+		self.logger.debug('Preparing email alert for provisioning activity...')
+		if not self._finished.empty():
+			while not self._finished.empty(): devices.append(self._finished.get())
+			success = '''The following device(s) were successfully provisioned:\n\t{0}\n'''.format('\n\t'.join(devices))
+			self.logger.debug('Generated list of successfully provisioned devices')
+		try:
+			db  = os.path.join(self.database, 'lockfile.db')
+			conn = sql.connect(db)
+			c = conn.cursor()
+			c.execute('SELECT ip FROM failure WHERE attempts > ? AND notify == 0', [self.alerts['threshold']])
+			devices = c.fetchall()
+			if devices:
+				failure = '''The following device(s) could not be provisioned:\n\t{0}\n'''.format('\n\t'.join([d[0] for d in devices]))
+				c.executemany('UPDATE failure SET notify = 1 WHERE ip = ?', devices)
+				conn.commit()
+				self.logger.debug('Generated list of devices that failed to be provisioned over ' + str(self.alerts['threshold']) + ' attempts.')
+		except Exception:
+			self.logger.error('Error generating email alert!', exc_info=True)
+		finally:
+			conn.close()
+		message = ''
+		if success:
+			message += success
+		if failure:
+			message += failure
+		a = dict(**self.alerts)
+		del a['sender'], a['recipients'], a['type'], a['threshold']
+		email = emailAlert(**a)
+		if message:
+			message += '\n\nThis alert was generated at {0}\n'.format(strftime('%a %b %d %Y %H:%M:%S', localtime()))
+			email.send(self.alerts['recipients'], message, self.alerts['sender'], subject='Provisioning Activity')
+			self.logger.info('An email has been sent.')
+		if not message:
+			self.logger.debug('No email was sent.')
+
 
 	getoids = {
 		'C4506': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
