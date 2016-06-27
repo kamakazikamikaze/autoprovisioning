@@ -365,7 +365,7 @@ class CiscoAutoProvision:
 				with open(os.path.join('./cfg', self.ignore), 'r+') as f:
 					ignore = False
 					lines = f.readlines()
-					if any(l in ([switch['IPaddress']] + switch['serial']) for l in lines):
+					if any(l.strip().upper() in ([switch['IPaddress']] + switch['serial']) for l in lines):
 						ignore = True
 					if ignore:
 						self._msg.put((logging.DEBUG, '[%s] Device is to be ignored. Aborting process', switch['IPaddress']))
