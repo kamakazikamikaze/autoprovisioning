@@ -316,7 +316,7 @@ class CiscoAutoProvision:
 		for switch in self.switches:
 			# self._lock(switch)
 			self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
-			progress = p.apply_async(self.autoupgrade, (switch,), callback=self._unlock)  # Python 3 has an error_callback. Nice...
+			progress = p.apply_async(self.autoupgrade, (switch,))  # Python 3 has an error_callback. Nice...
 		p.close()
 		while not progress.ready() or not self._msg.empty():
 			if not self._msg.empty():
@@ -410,7 +410,7 @@ class CiscoAutoProvision:
 			switch['success'] = False
 		finally:
 			self._msg.put((logging.DEBUG, '[%s] Removing from queue', switch['IPaddress']))
-			return switch
+			self._unlock(switch)
 			
 
 	def _get_model(self,switch):
@@ -810,6 +810,7 @@ class CiscoAutoProvision:
 				c.execute('INSERT INTO locked VALUES (?,?,?,?,?)', device)
 				# Update the date info
 				c.execute('INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?)', device)
+				self._msg.put((logging.DEBUG, '[%s] Placed lock on device', switch['IPaddress']))
 				conn.commit()
 				break
 			# Database is currently locked; try again
@@ -828,9 +829,11 @@ class CiscoAutoProvision:
 
 	def _unlock(self, switch):
 		# If the switch wasn't locked by *this* process, ignore it
+		if not all(x in switch.keys() for x in ['serial', 'model', 'locked']):
+			return False
 		while switch['locked']:
 			try:
-				db  = os.path.join(self.database, 'lockfile.db')
+				db = os.path.join(self.database, 'lockfile.db')
 				conn = sql.connect(db)
 				c = conn.cursor()
 				c.execute('''CREATE TABLE IF NOT EXISTS success
@@ -839,22 +842,26 @@ class CiscoAutoProvision:
 				                (name text, ip text, model text, serial text primary key, date text, attempts integer, notify integer)''')
 				# Even if it's not in the table for some reason, this won't 
 				# raise an error
-				c.execute('DELETE FROM locked WHERE serial = ?', (switch['serial'][0],))
+				c.execute('DELETE FROM locked WHERE serial = ?', [switch['serial'][0]])
+				self._msg.put((logging.DEBUG, '[%s] Removed lock on device', switch['IPaddress']))
 				if switch['success']:
 					# TODO: Notification of success/failure
 					device = (switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()))
 					c.execute('INSERT OR REPLACE INTO success VALUES (?,?,?,?,?)', device)
 					c.execute('DELETE FROM failure WHERE serial = ?', [switch['serial'][0]])
+					self._msg.put((logging.DEBUG, '[%s] Recorded success into database', switch['IPaddress']))
 				else:
 					c.execute('SELECT * FROM failure WHERE serial = ?', [switch['serial'][0]])
 					d = c.fetchone()
 					if d:
 						c.execute('UPDATE failure SET attempts = attempts + 1, date = ? WHERE serial = ?', (strftime('%a %b %d %Y %H:%M:%S', localtime()), switch['serial'][0]))
+						self._msg.put((logging.DEBUG, '[%s] Updated provisioning failure count in database', switch['IPaddress']))
 					else:
 						c.execute('INSERT INTO failure VALUES (?,?,?,?,?,?,?)',(switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()), 1, 'FALSE'))
+						self._msg.put((logging.DEBUG, '[%s] Recorded provisioning failure into database', switch['IPaddress']))
 				conn.commit()
 				conn.close()
-				break
+				return True
 			except sql.OperationalError as e:
 				if 'locked' in str(e).lower():
 					pass
