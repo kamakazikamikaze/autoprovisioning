@@ -14,10 +14,6 @@ import re
 import mmap
 import tftpy
 from multiprocessing import Process, Pool, Manager
-import subprocess
-import tempfile
-import string
-import random
 import ciscoupgrade as cup
 import sqlite3 as sql
 
@@ -320,7 +316,7 @@ class CiscoAutoProvision:
 		for switch in self.switches:
 			# self._lock(switch)
 			self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
-			progress = p.apply_async(self.autoupgrade, (switch,), callback=self._unlock)#, callback=self._decr)  # Python 3 has an error_callback. Nice...
+			progress = p.apply_async(self.autoupgrade, (switch,), callback=self._unlock)  # Python 3 has an error_callback. Nice...
 		p.close()
 		while not progress.ready() or not self._msg.empty():
 			if not self._msg.empty():
@@ -342,7 +338,6 @@ class CiscoAutoProvision:
 					self.logger.log(*log)
 		self.logger.info('Provisioning complete. See log for details.')
 		self.sendalerts()
-		# self._unlock()
 
 
 	def autoupgrade(self, switch):
@@ -354,6 +349,7 @@ class CiscoAutoProvision:
 			# Jul 14, 2016: C3850 averages ~8.5mins to reboot (not upgrading)
 			# Since spanning-tree must also discover VLAN routes, ~2 minutes
 			# should be added for it to finish mapping the network
+			switch['locked'] = False
 			timeout = 600
 			self._msg.put((logging.INFO, '[%s] Beginning provisioning process', switch['IPaddress']))
 			try:
@@ -364,8 +360,9 @@ class CiscoAutoProvision:
 			# Had to move the lock into here. We want the serial to be the  table's
 			# primary key in the event the device appears with a different IP
 			# We don't want to catch the exception; we want to exit ASAP
-			# sql.IntegrityError, 
+			# sql.IntegrityError,
 			self._lock(switch)
+			switch['locked'] = True
 			try:
 				self._get_new_name(switch)
 			except EasySNMPTimeoutError:
@@ -380,7 +377,7 @@ class CiscoAutoProvision:
 				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + '-to_k9-log.txt'))
 				self._upgradefirst(switch,logfilename)
 			logfilename = os.path.abspath(os.path.join(self.output_dir, switch['hostname'] + 'log.txt'))
-			self._send_rsa(switch,logfilename=logfilename)
+			self._gen_rsa(switch,logfilename=logfilename)
 			# open ssh session
 			self._ssh_opensession(switch)
 			if switch['IPaddress'] in self.upgrades:
@@ -414,7 +411,7 @@ class CiscoAutoProvision:
 		finally:
 			self._msg.put((logging.DEBUG, '[%s] Removing from queue', switch['IPaddress']))
 			return switch
-
+			
 
 	def _get_model(self,switch):
 		# logger = logging.getLogger('CAP.' + switch['hostname'].split('.')[0])
@@ -531,10 +528,10 @@ class CiscoAutoProvision:
 		sess.tftp_getimage()
 		# self._msg.put((logging.DEBUG, '[%s] K9: Verifying image...', switch['IPaddress']))
 		# sess.verifyimage()
-		self._msg.put((logging.DEBUG, '[%s] K9: Installing image...', switch['IPaddress']))
+		self._msg.put((logging.DEBUG, '[%s] K9: Installing and setting boot image...', switch['IPaddress']))
 		sess.softwareinstall()
-		self._msg.put((logging.DEBUG, '[%s] K9: Setting boot image...', switch['IPaddress']))
-		sess.writemem()
+		# self._msg.put((logging.DEBUG, '[%s] K9: Setting boot image...', switch['IPaddress']))
+		# sess.writemem()
 		self._msg.put((logging.DEBUG, '[%s] K9: Erasing startup-config...', switch['IPaddress']))
 		sess.erasestartup()
 		self._msg.put((logging.DEBUG, '[%s] K9: Reloading switch!', switch['IPaddress']))
@@ -633,52 +630,6 @@ class CiscoAutoProvision:
 		switch['session'].softwareinstall()
 
 
-	def _genrsa(self, switch):
-		"""
-		Securely generate an RSA keypair for switch.
-		The results are added as a dictionary with the key switch['rsa']
-
-		Raises an Exception if an error occurs while generating a private or public key
-		
-		Keyword arguments:
-		switch -- dictionary representing the device (switch)
-		"""
-		password = self._randstr(self._rsa_pass_size)
-		modulus = '4096' if not switch['model'] in ['C3560', 'C3750', 'C2940', 'C2960'] else '2048'
-		temp = tempfile.NamedTemporaryFile()
-		proc = subprocess.Popen(['openssl', 'genrsa', '-des3', '-passout', 'pass:'+password, '-out', temp.name, modulus], stdout=subprocess.PIPE)
-		(out, err) = proc.communicate()
-		if err is not None:
-			raise Exception("Error generating private RSA key!")
-		proc = subprocess.Popen(['openssl', 'rsa', '-in', temp.name, '-passin', 'pass:'+password, '-outform', 'PEM', '-pubout'], stdout=subprocess.PIPE)
-		(out, err) = proc.communicate()
-		if err is not None or len(out) < 5:
-			raise Exception("Error generating public RSA key!")
-		public = out.split('\n')[0:-1]
-		with open(temp.name, 'r+b') as f:
-			private = [line.strip() for line in f]
-		del temp
-		switch['rsa'] = {}
-		switch['rsa']['public'] = public
-		switch['rsa']['private'] = private
-		switch['rsa']['password'] = password
-
-
-	def _randstr(self, size):
-		"""
-		Securely generate a random string of a specified length
-		Can include uppercase or lowercase ASCII characters and/or integers
-
-		Keyword arguments:
-		length -- desired size of string
-
-		Returns:
-		Random string
-		"""
-		# http://stackoverflow.com/a/23728630/1993468
-		return ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(size))
-
-
 	def _tftp_replace(self,switch,time):
 		# logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 		if 'new IPaddress' in switch.keys():
@@ -753,7 +704,7 @@ class CiscoAutoProvision:
 		return success
 
 
-	def _send_rsa(self,switch,logfilename):
+	def _gen_rsa(self,switch,logfilename):
 		# logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 		# self.logger.debug('[%s] Attempting to setup RSA keys', switch['IPaddress'])
 		self._msg.put((logging.DEBUG, '[%s] Attempting to setup RSA keys', switch['IPaddress']))
@@ -788,7 +739,7 @@ class CiscoAutoProvision:
 		keyout = s.before
 		s.send('')
 		s.sendline('config t')
-		s.expect('#')
+		s.expect('\)#')
 		if 'name' in keyout:
 			# logger.debug('Erasing all existing keys...')
 			# self.logger.debug('[%s] Erasing all existing keys...', switch['IPaddress'])
@@ -797,30 +748,29 @@ class CiscoAutoProvision:
 			s.expect('\]: ')
 			s.sendline('yes')
 			s.expect('#')
-		if not 'rsa' in switch.keys():
-			# logger.debug('Generating RSA key pair locally...')
-			# self.logger.debug('[%s] Generating RSA key pair locally...', switch['IPaddress'])
-			self._msg.put((logging.DEBUG, '[%s] Generating RSA key pair locally...', switch['IPaddress']))
-			self._genrsa(switch)
-		# `selfsigned` is the name we're giving to the pair, for now
-		s.sendline('crypto key import rsa selfsigned pem terminal ' + switch['rsa']['password'])
-		s.expect('itself.')
-		# logger.debug('Transferring public RSA key...')
-		# self.logger.debug('[%s] Transferring public RSA key...', switch['IPaddress'])
-		self._msg.put((logging.DEBUG, '[%s] Transferring public RSA key...', switch['IPaddress']))
-		for line in switch['rsa']['public']:
-			s.sendline(line)
-		s.sendline('quit')
-		s.expect('itself.')
-		# logger.debug('Transferring private RSA key...')
-		# self.logger.debug('[%s] Transferring private RSA key...', switch['IPaddress'])
-		self._msg.put((logging.DEBUG, '[%s] Transferring private RSA key...', switch['IPaddress']))
-		for line in switch['rsa']['private']:
-			s.sendline(line)
-		s.sendline('quit')
-		s.expect('#')
-		successful = True if 'Key pair import succeeded' in s.before else False
+		s.sendline('crypto key generate rsa')
+		s.expect('\]: ')
+		if 'yes' in s.before:
+			s.sendline('yes')
+			s.expect('\]: ')
+		# Extract largest possible keysize
+		s.sendline('?')
+		s.expect('\]: ')
+		keysize = s.before.split('.')[0].split()[-1]
+		if not keysize.isdigit():
+			keysize = '2048' # Default if didn't split the output correctly
+		s.sendline(keysize)
+		if '3750' in switch['model'] and int(keysize) > 2048:
+			self._msg.put((logging.INFO, '[%s] Switch is a 3750X. Generating a 4096-bit key will take a while.', switch['IPaddress']))
+			s.expect('#', timeout=600)
+		else:
+			self._msg.put((logging.INFO, '[%s] Generating a %s-bit RSA keypair.', switch['IPaddress'], keysize))
+			s.expect('#', timeout=300)
+		successful = True if '[OK]' in s.before else False
 		s.sendline('ip ssh version 2')
+		s.expect('#')
+		# Change boot register since this is always run
+		s.sendline('config-register 0x2101')
 		s.expect('#')
 		s.sendline('exit')
 		s.expect('#')
@@ -834,11 +784,11 @@ class CiscoAutoProvision:
 			# logger.debug(s.before)
 			# self.logger.debug('[%s] :: %s', switch['IPaddress'], s.before)
 			self._msg.put((logging.DEBUG, '[%s] :: %s', switch['IPaddress'], s.before))
-			raise Exception('RSA key was not imported successfully...')
+			raise Exception('RSA key was not generated successfully!')
 		else:
 			# logger.info('RSA key was imported successfully!')
 			# self.logger.info('[%s] RSA key was imported successfully!', switch['IPaddress'])
-			self._msg.put((logging.INFO, '[%s] RSA key was imported successfully!', switch['IPaddress']))
+			self._msg.put((logging.INFO, '[%s] RSA key was generated successfully!', switch['IPaddress']))
 
 
 	def _lock(self, switch):
@@ -870,29 +820,33 @@ class CiscoAutoProvision:
 				else:
 					raise e
 			finally:
-				conn.close()
+				try:
+					conn.close()
+				except UnboundLocalError:
+					pass
 
 
 	def _unlock(self, switch):
-		while True:
+		# If the switch wasn't locked by *this* process, ignore it
+		while switch['locked']:
 			try:
 				db  = os.path.join(self.database, 'lockfile.db')
 				conn = sql.connect(db)
 				c = conn.cursor()
 				c.execute('''CREATE TABLE IF NOT EXISTS success
-				                (name text, ip text, model text, serial text primary key, date text, notify integer)''')
+				                (name text, ip text, model text, serial text primary key, date text)''')
 				c.execute('''CREATE TABLE IF NOT EXISTS failure
 				                (name text, ip text, model text, serial text primary key, date text, attempts integer, notify integer)''')
 				# Even if it's not in the table for some reason, this won't 
 				# raise an error
-				c.execute('DELETE FROM locked WHERE serial = ?', (switch['serial'][0]))
+				c.execute('DELETE FROM locked WHERE serial = ?', (switch['serial'][0],))
 				if switch['success']:
 					# TODO: Notification of success/failure
-					device = (switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()), 'FALSE')
-					c.execute('INSERT OR REPLACE INTO success VALUES (?,?,?,?,?,?)', device)
-					c.execute('DELETE FROM failure WHERE serial = ?', (switch['serial'][0]))
+					device = (switch['hostname'], switch['IPaddress'], switch['model'], switch['serial'][0], strftime('%a %b %d %Y %H:%M:%S', localtime()))
+					c.execute('INSERT OR REPLACE INTO success VALUES (?,?,?,?,?)', device)
+					c.execute('DELETE FROM failure WHERE serial = ?', [switch['serial'][0]])
 				else:
-					c.execute('SELECT * FROM failure WHERE serial = ?', (switch['serial'][0]))
+					c.execute('SELECT * FROM failure WHERE serial = ?', [switch['serial'][0]])
 					d = c.fetchone()
 					if d:
 						c.execute('UPDATE failure SET attempts = attempts + 1, date = ? WHERE serial = ?', (strftime('%a %b %d %Y %H:%M:%S', localtime()), switch['serial'][0]))
@@ -1199,7 +1153,7 @@ class CapTest(CiscoAutoProvision):
 		for switch in self.switches:
 			try:
 				logfilename = os.path.abspath(os.path.join(self.output_dir, switch['IPaddress'] + 'log.txt'))
-				self._send_rsa(switch,logfilename=logfilename)
+				self._gen_rsa(switch,logfilename=logfilename)
 			except Exception as e:
 				self.logger.error('%s: %s', switch['IPaddress'], e)
 				# print(e)

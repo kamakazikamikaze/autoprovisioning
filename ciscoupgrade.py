@@ -127,7 +127,7 @@ class ciscoUpgrade:
 		if 'switch' in out:
 			self._sendreceive('boot system switch all flash:/' + self.bin + '\r','#',verbose=True)
 		else:
-			self._sendreceive('boot system flash:' + self.bin + '\r','#',verbose=True)
+			self._sendreceive('boot system flash:/' + self.bin + '\r','#',verbose=True)
 		self._sendreceive('end\r','#')
 
 
@@ -200,8 +200,9 @@ class c38XXUpgrade(ciscoUpgrade):
 			raise Exception('Unable to expand image for installation!')
 		self._sendreceive('config t\r', '#')
 		self._sendreceive('boot system flash:packages.conf\r', '#')
-		self._sendreceive('end\r', '#')
-		self._sendreceive('write mem\r', '#')
+		# self._sendreceive('end\r', '#')
+		# self._sendreceive('write mem\r', '#')
+		self.writemem(True)
 		time.sleep(0.5)
 
 
@@ -216,7 +217,6 @@ class c45xxUpgrade(ciscoUpgrade):
 			self._sendreceive('copy tftp://' + self.tftpserver +'/bin/' + self.bin + ' bootflash:' + self.bin + '\r' ,'?')	
 			output = self._sendreceive('\r','#',verbose=True)
 			if  'Error' not in output:
-
 				successful = True
 			else:
 				attempts += 1
@@ -238,15 +238,16 @@ class c45xxUpgrade(ciscoUpgrade):
 
 	def cleansoftware(self):
 		# Clear out old software. We can place this at start of loop if desired
-		self._sendreceive('delete /recursive bootflash:*\r','?',verbose=True)
+		self._sendreceive('delete /recursive bootflash:\r','?',verbose=True)
 		self._sendreceive('\r','#',verbose=True)
 	
 
 	def softwareinstall(self):
 		self._sendreceive('config t\r', '#')
 		self._sendreceive('boot system flash bootflash:/' + self.bin + ' \r','#',verbose=True)
-		self._sendreceive('end\r','#')
-		self._sendreceive('write memory\r','#')
+		# self._sendreceive('end\r','#')
+		# self._sendreceive('write memory\r','#')
+		self.writemem(True)
 
 
 	def blastvlan(self):
@@ -342,6 +343,8 @@ class ciscoInsecureUpgrade:
 			self.shell.sendline('boot system switch all flash:/' + self.bin)
 		else:
 			self.shell.sendline('boot system flash:' + self.bin)
+		self.shell.sendline('config-register 0x2101')
+		self.shell.expect('#')
 		self.shell.sendline('end')
 		self.shell.expect('#')
 
@@ -387,6 +390,8 @@ class ciu3850(ciscoInsecureUpgrade):
 		self.shell.expect('\)#')
 		self.shell.sendline('boot system flash:packages.conf')
 		self.shell.expect('#')
+		self.shell.sendline('config-register 0x2101')
+		self.shell.expect('#')
 		self.writemem(True)
 
 
@@ -424,6 +429,8 @@ class ciu4500(ciscoInsecureUpgrade):
 		self.shell.sendline('config t')
 		self.shell.expect('\)#')
 		self.shell.sendline('boot system flash bootflash:/' + self.bin)
+		self.shell.expect('#')
+		self.shell.sendline('config-register 0x2101')
 		self.shell.expect('#')
 		self.writemem(True)
 
