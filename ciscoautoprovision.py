@@ -61,7 +61,7 @@ def generate_config(filename='autoProv.confg'):
 		'database' : '/srv/autoprovision',
 		'debug':'1',
 		'debug print':'0',
-		'lockfile folder':'./cfg/',
+		'ignore list':'ignore.txt',
 		'log file':'autoprov.log',
 		'output dir':'./output/',
 		'default rwcommunity': 'private',
@@ -179,8 +179,8 @@ class CiscoAutoProvision:
 				self.database = data['database']
 			if data['default rwcommunity']:
 				self.community = data['default rwcommunity']
-			if data['lockfile folder']:
-				self._lockdir = data['lockfile folder']
+			if data['ignore list']:
+				self.ignore = data['ignore list']
 			if data['output dir']:
 				self.output_dir = data['output dir']
 			if data['production rwcommunity']:
@@ -361,6 +361,17 @@ class CiscoAutoProvision:
 			# primary key in the event the device appears with a different IP
 			# We don't want to catch the exception; we want to exit ASAP
 			# sql.IntegrityError,
+			try:
+				with open(os.path.join('./cfg', self.ignore), 'r+') as f:
+					ignore = False
+					lines = f.readlines()
+					if any(l in ([switch['IPaddress']] + switch['serial']) for l in lines):
+						ignore = True
+					if ignore:
+						self._msg.put((logging.DEBUG, '[%s] Device is to be ignored. Aborting process', switch['IPaddress']))
+						return
+			except IOError as e:
+				self._msg.put(((logging.ERROR, 'Error opening ignore file \'%s\'', self.ignore, e), dict(exc_info=True)))
 			self._lock(switch)
 			switch['locked'] = True
 			try:
