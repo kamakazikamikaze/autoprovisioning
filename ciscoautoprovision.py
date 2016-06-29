@@ -58,21 +58,21 @@ def generate_config(filename='autoProv.confg'):
 			'C3850': 'cat3k_caa-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 			'C4506': 'cat4500e-universalk9.SPA.03.07.03.E.152-3.E3.bin',
 		},
-		'database' : '/srv/autoprovision',
-		'debug':'1',
-		'debug print':'0',
-		'ignore list':'ignore.txt',
-		'log file':'autoprov.log',
-		'output dir':'./output/',
+		'database': '/srv/autoprovision',
+		'debug': '1',
+		'debug print': '0',
+		'ignore list': 'ignore.txt',
+		'log file': 'autoprov.log',
+		'output dir': './output/',
 		'default rwcommunity': 'private',
 		'switch username': 'default',
 		'switch password': 'l4y3r2',
 		'switch enable': 'p4thw4y',
 		'tftp server': '10.0.0.254',
 		'telnet timeout': 20,
-		'production rwcommunity' : ''
+		'production rwcommunity': ''
 	}
-	with open('./cfg/' + filename, 'w') as dc:
+	with open(os.path.join(os.path.abspath('./cfg/'), filename), 'w') as dc:
 		json.dump(d, dc, indent=4, sort_keys=True)
 	logging.getLogger('CAP')
 	logging.debug('Config generated to %s', filename)
@@ -155,7 +155,7 @@ class CiscoAutoProvision:
 
 
 	def _parseconfig(self,filename):
-		with open('./cfg/' + filename) as f:
+		with open(os.path.join(os.path.abspath('./cfg/'), filename)) as f:
 			data = json.load(f)
 		try:
 			if int(data['debug']) <= 1  and int(data['debug']) >= 0:
@@ -362,7 +362,7 @@ class CiscoAutoProvision:
 			# We don't want to catch the exception; we want to exit ASAP
 			# sql.IntegrityError,
 			try:
-				with open(os.path.join('./cfg', self.ignore), 'r+') as f:
+				with open(os.path.join(os.path.abspath('./cfg'), self.ignore), 'r+') as f:
 					ignore = False
 					lines = f.readlines()
 					if any(l.strip().upper() in ([switch['IPaddress']] + switch['serial']) for l in lines):
@@ -694,7 +694,7 @@ class CiscoAutoProvision:
 		# logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
 		success = Helper(self.tftp).tftp_getconf(remotefilename=remotefilename, outputfile=outputfile)
 		if success:
-			with open(outputfile,'r+b') as f:
+			with open(os.path.join(os.path.abspath('.'), outputfile),'r+b') as f:
 				log = mmap.mmap(f.fileno(), 0)
 			# Perhaps this isn't necessary, but I wanted to ensure the file
 			# would be closed in the event of an interrupt
@@ -934,11 +934,11 @@ class CiscoAutoProvision:
 			db  = os.path.join(self.database, 'lockfile.db')
 			conn = sql.connect(db)
 			c = conn.cursor()
-			c.execute('SELECT ip FROM failure WHERE attempts > ? AND notify == 0', [self.alerts['threshold']])
+			c.execute('SELECT ip FROM failure WHERE attempts > ? AND notify == \'FALSE\'', [self.alerts['threshold']])
 			devices = c.fetchall()
 			if devices:
 				failure = '''The following device(s) could not be provisioned:\n\t{0}\n'''.format('\n\t'.join([d[0] for d in devices]))
-				c.executemany('UPDATE failure SET notify = 1 WHERE ip = ?', devices)
+				c.executemany('UPDATE failure SET notify = \'TRUE\' WHERE ip = ?', devices)
 				conn.commit()
 				self.logger.debug('Generated list of devices that failed to be provisioned over ' + str(self.alerts['threshold']) + ' attempts.')
 		except Exception:
