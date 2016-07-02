@@ -87,9 +87,9 @@ def generate_config(filename='autoProv.confg'):
 
 class CiscoAutoProvision:
     r'''
-    An auto-provisioning class designed to handle all steps necessary to detect,
-    upgrade, and configure equipment for production-ready status. It is designed
-    to work in the most simple manner:
+    An auto-provisioning class designed to handle all steps necessary to
+    detect, upgrade, and configure equipment for production-ready status.
+    It is designed to work in the most simple manner:
 
     .. code:: python
 
@@ -156,11 +156,11 @@ class CiscoAutoProvision:
         # When the instance object is being serialized, this method is called.
         # Since the logging library is not multiprocessing.Pool-friendly, it
         # causes the Pool to be terminated immediately. While we may consider
-        # spawning processes instead of using pools in the future, it still gives
-        # a good example of how to exclude certain values/properties in a "hacky"
-        # kind of way. Here we're creating a dictionary (which is serializable)
-        # and removing the saved logger from it. This allows Pool to use our
-        # instance and move along.
+        # spawning processes instead of using pools in the future, it still
+        # gives a good example of how to exclude certain values/properties in
+        # a "hacky" # kind of way. Here we're creating a dictionary
+        # (which is serializable) and removing the saved logger from it.
+        # This allows Pool to use our instance and move along.
         d = dict(self.__dict__)
         del d['logger']
         return d
@@ -172,10 +172,10 @@ class CiscoAutoProvision:
         r'''
         Configure the logging module.
 
-        This method is called in :py:meth:`__init__`. The logger is piped to two
-        places: the local logging file, as dictated by the initial configuration
-        file; STDOUT/console, if the "debug print" variable is set to 1 in the
-        config.
+        This method is called in :py:meth:`__init__`. The logger is piped to
+        two places: the local logging file, as dictated by the initial
+        configuration file; STDOUT/console, if the "debug print" variable is
+        set to 1 in the config.
         '''
         self.loglevel = logging.DEBUG if self.debug else logging.INFO
         # http://stackoverflow.com/a/9321890/1993468
@@ -288,7 +288,8 @@ class CiscoAutoProvision:
                 "An error occurred while parsing the config file: " +
                 str(e))
 
-    def search(self, target='http://localhost', index='autoprovisioning', time_mins=5, port=9200):  # ,authenticate=False
+    def search(self, target='http://localhost',
+               index='autoprovisioning', time_mins=5, port=9200):
         r'''
         Search and parse logs from an ElasticSearch server.
 
@@ -302,7 +303,7 @@ class CiscoAutoProvision:
 
         :param target: ElasticSearch server base address
         :param index: The index used for filing logs/docs pertaining to
-        auto-provisioning equipment
+                      auto-provisioning equipment
         '''
         self.switches = []
         if port is None:
@@ -349,7 +350,8 @@ class CiscoAutoProvision:
                 host['IPaddress'] = log['_source']['host']
                 neighbors = ''
                 for r in re.findall(
-                        r'(?<=, with )([\d\w\-\.\/]+ [\d\w\-\.\/]+)', log['_source']['message']):
+                        r'(?<=, with )([\d\w\-\.\/]+ [\d\w\-\.\/]+)',
+                        log['_source']['message']):
                     neighbors += r
                 host['nei_raw'] = neighbors
                 results.append(host)
@@ -396,22 +398,29 @@ class CiscoAutoProvision:
         Execute the full provisioning process, beginning with discovering
         equipment prepared for installation.
 
-        In order to prevent multiple instances of the class from simultaneously
-        provisioning the equipment, an SQLITE3 database is made to \'lock\' the
-        equipment to instruct all other instances to back off. (This allows for
-        other instances to pick up any equipment that may have surfaced since
-        a the most recent search of a separate instance.) The ElasticSearch
-        server will be queried for documents/logs and parsed. Based on the list
-        of switches populated in an internal list, each device will be added to
-        a multiprocessing Pool for asynchronous provisioning. Logs will be
-        generated add output to a file in the 'output' folder, using the
-        provided named passed in by the initial configuration file. In the event
-        that an unforseen error occurs and causes the Pool to exit early while
-        processes are still ongoing, the Pool will be instructed to wait until
-        all processes complete and return. Logs will not appear into the logfile
-        but will still be queued/retained until all processes finish. Once
-        complete, the queued logs will be flushed out to the file. Finally,
-        :py:meth:`sendalerts` is called to message the target audience, if any.
+        * In order to prevent multiple instances of the class from
+          simultaneously provisioning the equipment, an SQLITE3 database is
+          made to \'lock\' the equipment to instruct all other instances to
+          back off. (This allows for other instances to pick up any equipment
+          that may have surfaced since a the most recent search of a separate
+          instance.)
+        * The ElasticSearch server will be queried for documents/logs and
+          parsed.
+        * Based on the list of switches populated in an internal list, each
+          device will be added to a multiprocessing Pool for asynchronous
+          provisioning.
+        * Logs will be generated add output to a file in the 'output' folder,
+          using the provided named passed in by the initial configuration file.
+
+        .. note:: In the event that an unforseen error occurs and causes the
+                  Pool to exit early while processes are still ongoing, the
+                  Pool will be instructed to wait until all processes complete
+                  and return. Logs will not appear into the logfile but will
+                  still be queued/retained until all processes finish. Once
+                  complete, the queued logs will be flushed out to the file.
+
+        * Finally, :py:meth:`sendalerts` is called to message the target
+          audience, if any.
         '''
         self.search()
         if not self.switches:
@@ -439,8 +448,9 @@ class CiscoAutoProvision:
                     self.logger.log(*log)
         p.join()
         # Extra safety net, just in case an error kills the pool prematurely.
-        # The pool closed on me early last night and finished the script, however
-        # a worker was still TFTP'ing (and printing out) in the background
+        # The pool closed on me early last night and finished the script,
+        # however a worker was still TFTP'ing (and printing out) in the
+        # background
         while not self._msg.empty():
             if not self._msg.empty():
                 log = self._msg.get()
@@ -461,10 +471,6 @@ class CiscoAutoProvision:
                        any CDP neighbors
         '''
         try:
-            # logger = logging.getLogger('CAP.' + switch['hostname'].split('.')[0])
-            # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
-            # self.logger.info('Beginning provisioning process')
-            # self.logger.info('[%s] Beginning provisioning process', switch['IPaddress'])
             # Jul 14, 2016: C3850 averages ~8.5mins to reboot (not upgrading)
             # Since spanning-tree must also discover VLAN routes, ~2 minutes
             # should be added for it to finish mapping the network
@@ -479,9 +485,10 @@ class CiscoAutoProvision:
                 self._get_serial(switch)
             except EasySNMPTimeoutError:
                 raise Exception('Could not retrieve model and/or serial!')
-            # Had to move the lock into here. We want the serial to be the  table's
-            # primary key in the event the device appears with a different IP
-            # We don't want to catch the exception; we want to exit ASAP
+            # Had to move the lock into here. We want the serial to be the
+            # table's primary key in the event the device appears with a
+            # different IP We don't want to catch the exception; we want to
+            # exit ASAP
             # sql.IntegrityError,
             try:
                 with open(os.path.join(os.path.abspath('./cfg'), self.ignore), 'r+') as f:
@@ -656,9 +663,6 @@ class CiscoAutoProvision:
         if len(physical[0].value) == 0:
             del physical[0]
         model = str(physical[0].value.split('-')[1])
-        # self.logger.debug('IOS image: %s', softimage)
-        # self.logger.debug('[%s] IOS image: %s', switch['IPaddress'],
-        # softimage)
         self._msg.put(
             (logging.DEBUG,
              '[%s] IOS image: %s',
@@ -672,8 +676,6 @@ class CiscoAutoProvision:
             switch['model'] = model
             switch['bin'] = self.firmwares[model]
             switch['softimage'] = softimage
-            # self.logger.debug('[%s] No upgrade needed. Target IOS: %s',
-            # switch['IPaddress'], switch['bin'])
             self._msg.put(
                 (logging.DEBUG,
                  '[%s] No upgrade needed. Target IOS: %s',
@@ -684,9 +686,6 @@ class CiscoAutoProvision:
             switch['model'] = model
             switch['bin'] = self.firmwares[model]
             switch['softimage'] = softimage
-            # logger.debug('No upgrade needed. Target IOS: %s', switch['bin'])
-            # self.logger.debug('[%s] No upgrade needed. Target IOS: %s',
-            # switch['IPaddress'], switch['bin'])
             self._msg.put(
                 (logging.DEBUG,
                  '[%s] No upgrade needed. Target IOS: %s',
@@ -698,9 +697,6 @@ class CiscoAutoProvision:
             switch['bin'] = self.firmwares[model]
             switch['softimage'] = softimage
             self.upgrades.append(switch['IPaddress'])
-            # self.logger.debug('Upgrade needed. Target IOS: %s', switch['bin'])
-            # self.logger.debug('[%s] Upgrade needed. Target IOS: %s',
-            # switch['IPaddress'], switch['bin'])
             self._msg.put(
                 (logging.DEBUG,
                  '[%s] Upgrade needed. Target IOS: %s',
@@ -778,15 +774,11 @@ class CiscoAutoProvision:
              '[%s] K9: Fetching and verifying image...',
              switch['IPaddress']))
         sess.tftp_getimage()
-        # self._msg.put((logging.DEBUG, '[%s] K9: Verifying image...', switch['IPaddress']))
-        # sess.verifyimage()
         self._msg.put(
             (logging.DEBUG,
              '[%s] K9: Installing and setting boot image...',
              switch['IPaddress']))
         sess.softwareinstall()
-        # self._msg.put((logging.DEBUG, '[%s] K9: Setting boot image...', switch['IPaddress']))
-        # sess.writemem()
         self._msg.put(
             (logging.DEBUG,
              '[%s] K9: Erasing startup-config...',
@@ -847,9 +839,6 @@ class CiscoAutoProvision:
             try:
                 newname = alias[int(i) - 1].value.split()[0]
                 if newname:
-                    # logger.debug('New name: %s', newname)
-                    # self.logger.debug('[%s] New name: %s',
-                    # switch['IPaddress'], newname)
                     switch['new name'] = newname
                     self._msg.put(
                         (logging.INFO,
@@ -858,9 +847,6 @@ class CiscoAutoProvision:
                             switch['new name']))
                     pass  # TODO
             except IndexError:
-                # logger.warning('Target hostname was not found on a neighboring switch for %s!', switch['IPaddress'])
-                # self.logger.warning('[%s] Target hostname was not found on a
-                # neighboring switch!', switch['IPaddress'])
                 self._msg.put(
                     (logging.WARNING,
                      '[%s] Target hostname was not found on a neighboring switch!',
@@ -894,9 +880,6 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
-        # logger.debug('Preparing SSH session')
-        # self.logger.debug('[%s] Preparing SSH session', switch['IPaddress'])
         d = dict(host=switch['IPaddress'], tftpserver=self.tftp,
                  binary_file=switch['bin'],
                  username=self.suser, password=self.spasswd,
@@ -912,9 +895,6 @@ class CiscoAutoProvision:
         elif switch['model'].startswith('C45'):
             switch['session'] = cup.c45xxUpgrade(**d)
         else:
-            # logger.debug('Using default upgrade profile')
-            # self.logger.debug('[%s] Using default upgrade profile',
-            # switch['IPaddress'])
             self._msg.put(
                 (logging.DEBUG,
                  '[%s] Using default upgrade profile',
@@ -927,34 +907,21 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        # logger = logging.getLogger('CAP.' + switch['hostname'].split('.')[0])
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
-        # logger.info('Preparing upgrade process...')
-        # self.logger.info('[%s] Preparing upgrade process...',
-        # switch['IPaddress'])
         self._msg.put(
             (logging.INFO,
              '[%s] Preparing upgrade process...',
              switch['IPaddress']))
         switch['session'].tftp_setup()
-        # logger.debug('Clearing out old images...')
-        # self.logger.debug('[%s] Clearing out old images...',
-        # switch['IPaddress'])
         self._msg.put(
             (logging.DEBUG,
              '[%s] Clearing out old images...',
              switch['IPaddress']))
         switch['session'].cleansoftware()
-        # logger.debug('Retrieving IOS image...')
-        # self.logger.debug('[%s] Retrieving IOS image...',
-        # switch['IPaddress'])
         self._msg.put(
             (logging.DEBUG,
              '[%s] Retrieving IOS image...',
              switch['IPaddress']))
         switch['session'].tftp_getimage()
-        # logger.debug('Installing software...')
-        # self.logger.debug('[%s] Installing software...', switch['IPaddress'])
         self._msg.put(
             (logging.DEBUG,
              '[%s] Installing software...',
@@ -969,20 +936,13 @@ class CiscoAutoProvision:
         :param switch: Dictionary representing the target device
         :param time: Timeout period, in seconds, before giving up
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
         if 'new IPaddress' in switch.keys():
             switch['session'].tftp_replaceconf(timeout=time)
-            # logger.info('Startup-config successfully transferred')
-            # self.logger.info('[%s] Startup-config successfully transferred',
-            # switch['IPaddress'])
             self._msg.put(
                 (logging.INFO,
                  '[%s] Startup-config successfully transferred',
                  switch['IPaddress']))
         else:
-            # logger.warning('Unable to find a configuration file on TFTP server!')
-            # self.logger.warning('[%s] Unable to find a configuration file on
-            # TFTP server!', switch['IPaddress'])
             self._msg.put(
                 (logging.WARNING,
                  '[%s] Unable to find a configuration file on TFTP server!',
@@ -996,15 +956,10 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
-        # try get null-serial#.conf config
         switch['session'].blastvlan()
         found_config = False
         if not found_config and 'serial' in switch.keys():
             for serial in switch['serial']:
-                # logger.info('Using config that matches the serial number!')
-                # self.logger.info('[%s] Using config that matches the serial
-                # number!', switch['IPaddress'])
                 dir_prefix = '/autoprov'
                 filename = '/' + serial + '-confg'
                 found_config = self._startupcfg(
@@ -1017,10 +972,6 @@ class CiscoAutoProvision:
                     # switch['serial'] = [serial]
                     break
         if not found_config and 'new name' in switch.keys():
-            # logger.info('No config matches serial number. Searching for one based on CDP neighbor\'s port description')
-            # self.logger.info('[%s] No config matches serial number. Searching
-            # for one based on CDP neighbor\'s port description',
-            # switch['IPaddress'])
             self._msg.put(
                 (logging.INFO,
                  '[%s] No config matches serial number. Searching for one based on CDP neighbor\'s port description',
@@ -1035,9 +986,6 @@ class CiscoAutoProvision:
                      switch['IPaddress'],
                         filename))
         if not found_config:
-            # logger.warning('Unable to find target config file. Resorting to model default!')
-            # self.logger.warning('[%s] Unable to find target config file.
-            # Resorting to model default!', switch['IPaddress'])
             self._msg.put(
                 (logging.WARNING,
                  '[%s] Unable to find target config file. Resorting to model default!',
@@ -1062,7 +1010,6 @@ class CiscoAutoProvision:
         :param switch: Dictionary representing the target device
         :param remotefilename: Target file to fetch
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
         outputfile = NamedTemporaryFile()
         success = Helper(
             self.tftp).tftp_getconf(
@@ -1084,9 +1031,6 @@ class CiscoAutoProvision:
                 raise e
             finally:
                 log.close()
-            # logger.debug('new ip address information: ' + str(results))
-            # self.logger.debug('[%s] New ip address: %s', switch['IPaddress'],
-            # switch['new IPaddress'])
             self._msg.put(
                 (logging.DEBUG,
                  '[%s] New ip address: %s',
@@ -1101,16 +1045,16 @@ class CiscoAutoProvision:
         enabled.
 
         The RSA keys will be saved to the private-config. This allows
-        persistence and the keys can be used between reboots. (This also reduces
-        redundancy and time wasted from having to generate keys every time the
-        target reboots because they were not saved.)
+        persistence and the keys can be used between reboots. (This also
+        reduces redundancy and time wasted from having to generate keys every
+        time the target reboots because they were not saved.)
 
         .. note:: Some models, such as C3750X, can generate keys with a modulus
                   size of 4096 bits. Unlike the C3850 and C4500 series, this
                   will take a significant amount of time to do. The method
                   defaults to the largest modulus size possible, which may be
-                  either 2048 or 4096. Take this into consideration when waiting
-                  for provisioning to complete.
+                  either 2048 or 4096. Take this into consideration when
+                  waiting for provisioning to complete.
 
         :param switch: Dictionary representing the target device
         :param logfilename: File to flush the Telnet session buffer to
@@ -1237,14 +1181,15 @@ class CiscoAutoProvision:
     def _lock(self, switch):
         r'''
         Place a 'lock' on an unprovisioned device to prevent race conditions
-        using an SQLITE3 DB. The DB name is specified in the initial config file
+        using an SQLITE3 DB. The DB name is specified in the initial config
+        file
 
         .. note:: This should only be called from within :py:meth:`autoupgrade`
 
         .. warning:: In order for all processes to sync, every instance of the
                      script must point to the same DB location. If two users
-                     have their 'database' config value set differently, locking
-                     will **not** work correctly!
+                     have their 'database' config value set differently,
+                     locking will **not** work correctly!
 
         This method will ensure that the appropriate tables exist in the
         database before attempting to insert any values. If the table is locked
@@ -1310,8 +1255,8 @@ class CiscoAutoProvision:
 
     def _unlock(self, switch):
         r'''
-        Release the lock placed on the target device and log if the provisioning
-        process ended in success or failure.
+        Release the lock placed on the target device and log if the
+        provisioning process ended in success or failure.
 
         .. note:: This should only be called from within :py:meth:`autoupgrade`
 
@@ -1434,7 +1379,6 @@ class CiscoAutoProvision:
         # TODO: Allow simultaneous ping attempts
         if isinstance(target, list):
             target = target[0]
-        # self.logger.info('Pinging %s', target)
         self._msg.put((logging.INFO, 'Pinging %s', target))
         attempts = 1
         cycle = cycle if cycle > 5 else 5
@@ -1450,14 +1394,12 @@ class CiscoAutoProvision:
                      target,
                      attempts,
                      retries))
-            #   sys.stdout.write("\rSending ping " + str(attempts) + " of " + str(retries))
-            #   sys.stdout.flush()
             if self.ping(target):
-                # self.logger.info('%s responded to ping!', target)
                 self._msg.put(
                     (logging.INFO, '[%s] Responded to ping!', target))
                 return True
-            sleep(cycle - 1)  # Timeout is 1, so remove that from the overall wait
+            sleep(cycle - 1)
+            # Timeout is 1, so remove that from the overall wait
             timeout -= cycle
             attempts += 1
         # self.logger.warning('%s did not respond to pings!', target)
@@ -1473,7 +1415,8 @@ class CiscoAutoProvision:
         Reports on all successful provisioning attempts from this session. If
         any devices have failed to be provisioned more times than the threshold
         set in the initial config file, they are added to the email and their
-        database entry is updated to denote this. (This alert only occurs once.)
+        database entry is updated to denote this. (This alert only occurs
+        once.)
         '''
         devices = []
         success = ''
@@ -1611,14 +1554,7 @@ class CapTest(CiscoAutoProvision):
         '''
         Full provisioning process
         '''
-        # self.search()
-        # if self.switches:
         self.logger.info('Starting Autoprovision process')
-        # logger = multiprocessing.log_to_stderr()
-        # logger.setLevel(self.loglevel)
-        # logger.info('Initializing pool')
-        # p = multiprocessing.Pool(initializer=multiprocessing_logging.install_mp_handler)
-        # p = Pool()
         self._remaining = []
         for switch in self.switches:
             self._remaining.append(switch['IPaddress'])
@@ -1639,8 +1575,9 @@ class CapTest(CiscoAutoProvision):
             p.join()
             self._rem(switch['IPaddress'])
         # Extra safety net, just in case an error kills the pool prematurely.
-        # The pool closed on me early last night and finished the script, however
-        # a worker was still TFTP'ing (and printing out) in the background
+        # The pool closed on me early last night and finished the script,
+        # however a worker was still TFTP'ing (and printing out) in the
+        # background
         while not self._msg.empty():
             if not self._msg.empty():
                 log = self._msg.get()
@@ -1764,10 +1701,14 @@ class CapTest(CiscoAutoProvision):
                     self.logger.error('%s', e, exc_info=True)
 
     def tftp_startup(self):
-        '''trys to pull a configuration from the given tftp server. the tftp_startup will first
-        try and get a config based on the serial number in a serialnum-conf format in the tftpboot/autoprov/ folder
-        if that fails then it checks in the base /tftpboot/ folder for a config that is the same as the feedport description
-        and in the event that fails it will look in the /tftpboot/ folder for a model specific base config.
+        '''
+        Trys to pull a configuration from the given tftp server. the
+        tftp_startup will first try and get a config based on the serial
+        number in a serialnum-conf format in the tftpboot/autoprov/ folder if
+        that fails then it checks in the base /tftpboot/ folder for a config
+        that is the same as the feedport description and in the event that
+        fails it will look in the /tftpboot/ folder for a model specific base
+        config.
          '''
         for switch in self.switches:
             try:

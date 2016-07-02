@@ -21,12 +21,14 @@ easy it really is.
 Contents:
 
 .. toctree::
+   :caption: Table of Contents
+   :name: mastertoc
    :maxdepth: 3
+   :numbered:
 
    ciscoautoprovision_api
    ciscoupgrade_api
    alerts_api
-
 
 Indices and tables
 ==================

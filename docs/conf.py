@@ -15,6 +15,16 @@
 import sys
 import os
 
+# MANUAL EDIT
+# Windows can't install Easysnmp and, thanks to the author, my efforts to make
+# it possible were entirely ignored. So if you want to generate docs on Windows
+# you will have to make a mockup of the module
+
+if sys.platform.startswith('win'):
+    autodoc_mock_imports = [
+        'easysnmp'
+    ]
+
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.

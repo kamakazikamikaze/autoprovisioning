@@ -7,7 +7,9 @@ ciscoUpgrade API
 ----------------
 
 .. autoclass:: ciscoUpgrade
-   :members: _sendreceive, tftp_setup, cleansoftware, tftp_getimage, verifyimage, softwareinstall, writemem, sendreload, tftp_getstartup, blastvlan, tftp_replaceconf
+   :members: _sendreceive, tftp_setup, cleansoftware, tftp_getimage,
+   			 verifyimage, softwareinstall, writemem, sendreload,
+   			 tftp_getstartup, blastvlan, tftp_replaceconf
 
 c38xxUpgrade
 ------------
@@ -23,7 +25,8 @@ ciscoInsecureUpgrade API
 ------------------------
 
 .. autoclass:: ciscoInsecureUpgrade
-   :members: tftp_setup, cleansoftware, tftp_getimage, verifyimage, softwareinstall, writemem, erasestartup, sendreload
+   :members: tftp_setup, cleansoftware, tftp_getimage, verifyimage,
+             softwareinstall, writemem, erasestartup, sendreload
 
 ciu3850 class
 -------------

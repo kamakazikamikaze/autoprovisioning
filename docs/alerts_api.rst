@@ -1,5 +1,5 @@
 alerts module
-=========================
+====================
 
 .. module:: alerts
 
@@ -12,4 +12,4 @@ emailAlert API
 --------------
 
 .. autoclass:: emailAlert
-   :members: send, error
+   :members: send, auth, _auth, error

@@ -52,8 +52,8 @@ class emailAlert(alert):
     Allows for authentication with any built-in :py:mod:smtplib options
 
     .. warning:: If you're going to send credentials, you damn well should
-                 pass in `secure` as True so that an SSL/TLS session is created
-                 for the exchange.
+                 pass in ``secure=True`` so that an SSL/TLS session is
+                 created for the exchange.
 
     :param endpoint: Mail server's address
     :param username: Credential
@@ -66,8 +66,9 @@ class emailAlert(alert):
     :param timeout: Maximum wait until giving up on server to respond
     '''
 
-    def __init__(self, endpoint='localhost', username=None, password=None, port=None,
-                 secure=True, keyfile=None, certfile=None, timeout=3):
+    def __init__(self, endpoint='localhost', username=None, password=None,
+                 port=None, secure=True, keyfile=None, certfile=None,
+                 timeout=3):
         super(emailAlert, self).__init__(endpoint, username, password, port)
         self.secure = secure
         self.keyfile = keyfile
@@ -88,7 +89,8 @@ class emailAlert(alert):
                      prevent an extended wait.
         '''
         pass
-        # raise NotImplementedError('This is now a private method. Do not call it directly!')
+        # raise NotImplementedError('This is now a private method.
+        # Do not call it directly!')
 
     def _auth(self):
         r'''
