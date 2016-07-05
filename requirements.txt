@@ -1,0 +1,14 @@
+cffi==1.7.0
+cryptography==1.4
+easysnmp==0.2.4
+enum34==1.1.6
+idna==2.1
+ipaddress==1.0.16
+paramiko==2.0.1
+pexpect==4.1.0
+ptyprocess==0.5.1
+pyasn1==0.1.9
+pycparser==2.14
+requests==2.10.0
+six==1.10.0
+tftpy==0.6.2

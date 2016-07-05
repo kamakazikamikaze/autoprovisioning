@@ -1,5 +1,5 @@
 """
-Collection of handlers for sending alerts through
+Collection of handlers for sending alerts through various means
 .. module:: alerts
    :platform: Unix, Windows
 
