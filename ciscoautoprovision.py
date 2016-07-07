@@ -1118,6 +1118,8 @@ class CiscoAutoProvision:
             s.expect('\]: ')
             s.sendline('yes')
             s.expect('#')
+        s.sendline('crypto key storage nvram:')
+        s.expect('#')
         s.sendline('crypto key generate rsa')
         s.expect('\]: ')
         if 'yes' in s.before:
