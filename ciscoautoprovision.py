@@ -367,7 +367,7 @@ class CiscoAutoProvision:
             switch[ip] = ip
             sl[ip] = {}
             sl[ip]['IPaddress'] = switch['IPaddress']
-            sl[ip].setdefault('hostname', '')
+            sl[ip].setdefault('hostname', ip)
             sl[ip].setdefault('neighbors', {})
             if switch['nei_raw'].encode().split():
                 sl[ip]['neighbors'].setdefault(
@@ -375,8 +375,11 @@ class CiscoAutoProvision:
         for switch in temp_switches:
             try:
                 ip = switch['IPaddress'].encode()
-                hostname = gethostbyaddr(ip)[0]
-                sl[ip]['hostname'] = hostname
+                try:
+                    hostname = gethostbyaddr(ip)[0]
+                    sl[ip]['hostname'] = hostname
+                except:
+                    self.logger.error(switch, exc_info=True)
                 neighbor = switch['nei_raw'].encode().split()
                 if neighbor:
                     n = neighbor.pop(0)
