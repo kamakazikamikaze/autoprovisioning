@@ -397,7 +397,8 @@ class CiscoAutoProvision:
                     switch['ip address'])
         for k, v in sl.iteritems():
             self.switches.append(v)
-        self.logger.debug(pformat(self.switches))
+        self.logger.debug('Data found from ElasticSearch: %s',
+                          pformat(self.switches))
 
     def run(self):
         r'''
@@ -1110,6 +1111,17 @@ class CiscoAutoProvision:
                 # Initialize tables, if not already existant
                 # When tables are created, the DB immediately commits them.
                 # Another process may, however, lock the table between CREATEs
+                c.execute(('CREATE TABLE IF NOT EXISTS failure (name text, '
+                           'ip text, model text, serial text primary key, '
+                           'date text, attempts integer, notify text)'))
+                c.execute('SELECT * FROM failure WHERE serial = ?',
+                          [switch['serial'][0]])
+                d = c.fetchone()
+                if d and d[5] >= self.alerts['threshold']:
+                    raise sql.OperationalError(
+                        ('Device has failed to be provisioned too many times!'
+                         'Will not attempt again until device is removed from '
+                         'the database.'))
                 c.execute(
                     ('CREATE TABLE IF NOT EXISTS devices (name text, '
                      'ip text, model text, serial text primary key, '
@@ -1183,9 +1195,6 @@ class CiscoAutoProvision:
                 c.execute((
                     'CREATE TABLE IF NOT EXISTS success (name text, ip text, '
                     'model text, serial text primary key, date text)'))
-                c.execute(('CREATE TABLE IF NOT EXISTS failure (name text, '
-                           'ip text, model text, serial text primary key, '
-                           'date text, attempts integer, notify text)'))
                 # Even if it's not in the table for some reason, this won't
                 # raise an error
                 c.execute(
@@ -1252,7 +1261,10 @@ class CiscoAutoProvision:
                 else:
                     raise e
             finally:
-                conn.close()
+                try:
+                    conn.close()
+                except UnboundLocalError:
+                    pass
 
     def _wait(self, target, cycle=5, timeout=300):
         r'''
@@ -1320,7 +1332,7 @@ class CiscoAutoProvision:
             conn = sql.connect(db)
             c = conn.cursor()
             c.execute(
-                ('SELECT ip FROM failure WHERE attempts > ? AND notify == '
+                ('SELECT ip FROM failure WHERE attempts >= ? AND notify == '
                     '\'FALSE\''), [self.alerts['threshold']])
             devices = c.fetchall()
             if devices:
@@ -1357,6 +1369,44 @@ class CiscoAutoProvision:
             self.logger.info('An email has been sent.')
         if not message:
             self.logger.debug('No email was sent.')
+
+    def flushfailures(self):
+        while True:
+            try:
+                db = os.path.join(self.database, 'lockfile.db')
+                conn = sql.connect(db)
+                c = conn.cursor()
+                c.execute(('CREATE TABLE IF NOT EXISTS failure (name text, '
+                           'ip text, model text, serial text primary key, '
+                           'date text, attempts integer, notify text)'))
+                c.execute(
+                    ('SELECT * FROM failure WHERE attempts >= ? AND notify == '
+                     '\'TRUE\''), (self.alerts['threshold'],))
+                rows = c.fetchall()
+                if rows:
+                    c.executemany('DELETE FROM failure WHERE serial = ?',
+                                  [(row[3],) for row in rows])
+                conn.commit()
+                self.logger.info('Flushed stale failure logs from database')
+                return
+            except sql.OperationalError as e:
+                if 'locked' in str(e).lower():
+                    pass
+                else:
+                    self.logger.error(
+                        'Error flushing records from DB failures table!',
+                        exc_info=True)
+                    raise e
+            except Exception as e:
+                self.logger.error(
+                    'Error flushing records from DB failures table!',
+                    exc_info=True)
+                raise e
+            finally:
+                try:
+                    conn.close()
+                except UnboundLocalError:
+                    pass
 
     getoids = {
         'C4506': lambda hostname, community: [
