@@ -14,14 +14,13 @@ import re
 import mmap
 import tftpy
 from tempfile import NamedTemporaryFile
-from multiprocessing import Process, Pool, Manager
+from multiprocessing import Process, Manager
 import ciscoupgrade as cup
 import sqlite3 as sql
 
 
 try:    # Python 3 compatibility
     input = raw_input
-    range = xrange
     import copy_reg
     import types
 
@@ -149,7 +148,6 @@ class CiscoAutoProvision:
         self._parseconfig(configfile)
         self._setuplogger()
         self.logger.debug('Class instance created.')
-        self._msg = Manager().Queue()
         self._finished = Manager().Queue()
 
     def __getstate__(self):
@@ -179,17 +177,19 @@ class CiscoAutoProvision:
         '''
         self.loglevel = logging.DEBUG if self.debug else logging.INFO
         # http://stackoverflow.com/a/9321890/1993468
-        logging.basicConfig(
-            level=self.loglevel,
-            filename=os.path.join(
-                os.path.abspath(
-                    self.output_dir),
-                self.logfile),
-            format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
-            datefmt='%m-%d %H:%M:%S',
-            filemode='a')
+        # logging.basicConfig(
+        #     level=self.loglevel,
+        #     filename=os.path.join(
+        #         os.path.abspath(
+        #             self.output_dir),
+        #         self.logfile),
+        #     format='%(asctime)s %(name)-4s| %(levelname)-8s| %(message)s',
+        #     datefmt='%m-%d %H:%M:%S',
+        #     filemode='a')
+        logger = logging.getLogger('')
+        logger.handlers = []
         formatter = logging.Formatter(
-            '%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
+            '%(asctime)s %(name)-4s| %(levelname)-8s | %(message)s',
             datefmt='%m-%d %H:%M:%S')
         fh = logging.FileHandler(
             os.path.join(
@@ -198,17 +198,19 @@ class CiscoAutoProvision:
                 self.logfile))
         fh.setLevel(self.loglevel)
         fh.setFormatter(formatter)
-        if self.debug_print:
-            formatter = logging.Formatter(
-                '%(name)-12s: %(levelname)-8s %(message)s')
-            console = logging.StreamHandler()
-            console.setLevel(self.loglevel)
-            console.setFormatter(formatter)
-            logging.getLogger('').addHandler(console)
-            # self.logger.addHandler(console)
         self.logger = logging.getLogger('CAP')
         self.logger.setLevel(self.loglevel)
         self.logger.addHandler(fh)
+        if self.debug_print:
+            cformatter = logging.Formatter(
+                '%(name)-4s| %(levelname)-8s | %(message)s')
+            console = logging.StreamHandler()
+            console.setLevel(self.loglevel)
+            console.setFormatter(cformatter)
+            # logging.getLogger('').addHandler(console)
+            self.logger.addHandler(console)
+        else:
+            logger.propagate = False
         self.logger.debug('Logger successfully created.')
 
     def ping(self, host):
@@ -275,7 +277,8 @@ class CiscoAutoProvision:
             if 'username' in data.keys():
                 self.alerts['username'] = data['alerts']['username']
                 self.alerts['password'] = data['alerts']['password']
-            self._rsa_pass_size = 32 if not 'rsa pass size' in data.keys() else data[
+            self._rsa_pass_size = 32 if not (
+                'rsa pass size' in data.keys()) else data[
                 'rsa pass size']
             if int(data['telnet timeout']) < 5:
                 data['telnet timeout'] = 30
@@ -347,7 +350,7 @@ class CiscoAutoProvision:
         for log in hits:
             try:
                 host = {}
-                host['IPaddress'] = log['_source']['host']
+                host['ip address'] = log['_source']['host']
                 neighbors = ''
                 for r in re.findall(
                         r'(?<=, with )([\d\w\-\.\/]+ [\d\w\-\.\/]+)',
@@ -363,10 +366,10 @@ class CiscoAutoProvision:
                          for t in set([tuple(d.items()) for d in results])]
         sl = {}
         for switch in temp_switches:
-            ip = switch['IPaddress'].encode()
+            ip = switch['ip address'].encode()
             switch[ip] = ip
             sl[ip] = {}
-            sl[ip]['IPaddress'] = switch['IPaddress']
+            sl[ip]['ip address'] = switch['ip address']
             sl[ip].setdefault('hostname', ip)
             sl[ip].setdefault('neighbors', {})
             if switch['nei_raw'].encode().split():
@@ -374,7 +377,7 @@ class CiscoAutoProvision:
                     switch['nei_raw'].encode().split()[0], [])
         for switch in temp_switches:
             try:
-                ip = switch['IPaddress'].encode()
+                ip = switch['ip address'].encode()
                 try:
                     hostname = gethostbyaddr(ip)[0]
                     sl[ip]['hostname'] = hostname
@@ -391,7 +394,7 @@ class CiscoAutoProvision:
                 self.logger.error(switch, exc_info=True)
                 self.logger.debug(
                     'could not find hostname for ' +
-                    switch['IPaddress'])
+                    switch['ip address'])
         for k, v in sl.iteritems():
             self.switches.append(v)
         self.logger.debug(pformat(self.switches))
@@ -431,36 +434,17 @@ class CiscoAutoProvision:
             return
         # if self.switches:
         self.logger.info('Starting Autoprovision process')
-        # logger = multiprocessing.log_to_stderr()
-        # logger.setLevel(self.loglevel)
-        # logger.info('Initializing pool')
-        p = Pool()
-        # self._remaining = []
+        processes = []
         for switch in self.switches:
-            # self._lock(switch)
+            p = Process(target=self.autoupgrade, args=(switch,))
             self.logger.debug('Adding ' + switch['hostname'] + ' to pool.')
-            # Python 3 has an error_callback. Nice...
-            progress = p.apply_async(self.autoupgrade, (switch,))
-        p.close()
-        while not progress.ready() or not self._msg.empty():
-            if not self._msg.empty():
-                log = self._msg.get()
-                if isinstance(log[-1], dict):  # Contains `exc_info=True`
-                    self.logger.log(*log[0], **log[1])
-                else:
-                    self.logger.log(*log)
-        p.join()
-        # Extra safety net, just in case an error kills the pool prematurely.
-        # The pool closed on me early last night and finished the script,
-        # however a worker was still TFTP'ing (and printing out) in the
-        # background
-        while not self._msg.empty():
-            if not self._msg.empty():
-                log = self._msg.get()
-                if isinstance(log[-1], dict):  # Contains `exc_info=True`
-                    self.logger.log(*log[0], **log[1])
-                else:
-                    self.logger.log(*log)
+            p.start()
+            processes.append(p)
+        # while any(s.is_alive() for s in processes):
+        #     pass
+        for p in processes:
+            # To prevent zombie/disowned processes, set a timeout
+            p.join(3600)
         self.logger.info('Provisioning complete. See log for details.')
         self.sendalerts()
 
@@ -477,12 +461,12 @@ class CiscoAutoProvision:
             # Jul 14, 2016: C3850 averages ~8.5mins to reboot (not upgrading)
             # Since spanning-tree must also discover VLAN routes, ~2 minutes
             # should be added for it to finish mapping the network
+            self.logger = logging.getLogger('CAP')
             switch['locked'] = False
             timeout = 600
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] Beginning provisioning process',
-                 switch['IPaddress']))
+            self.logger.info(
+                '[%s] Beginning provisioning process',
+                switch['ip address'])
             try:
                 self._get_model(switch)
                 self._get_serial(switch)
@@ -494,38 +478,31 @@ class CiscoAutoProvision:
             # exit ASAP
             # sql.IntegrityError,
             try:
-                with open(os.path.join(os.path.abspath('./cfg'), self.ignore), 'r+') as f:
+                with open(os.path.join(os.path.abspath('./cfg'), self.ignore),
+                          'r+') as f:
                     ignore = False
                     lines = f.readlines()
                     if any(l.strip().upper() in (
-                            [switch['IPaddress']] + switch['serial']) for l in lines):
+                            [switch['ip address']] + switch['serial'])
+                           for l in lines):
                         ignore = True
                     if ignore:
-                        self._msg.put(
-                            (logging.DEBUG,
-                             '[%s] Device is to be ignored. Aborting process',
-                             switch['IPaddress']))
+                        self.logger.debug(
+                            '[%s] Device is to be ignored. Aborting process',
+                            switch['ip address'])
                         return
             except IOError as e:
-                self._msg.put(
-                    ((logging.ERROR,
-                      'Error opening ignore file \'%s\'',
-                      self.ignore,
-                      e),
-                     dict(
-                        exc_info=True)))
+                self.logger.error(
+                    '[%s] Error opening ignore file \'%s\'',
+                    switch['ip address'], self.ignore, exc_info=True)
             self._lock(switch)
             switch['locked'] = True
             try:
                 self._get_new_name(switch)
             except EasySNMPTimeoutError:
-                # logger.debug('Could not access neighbor switch')
-                # self.logger.debug('[%s] Could not access neighbor switch',
-                # switch['IPaddress'])
-                self._msg.put(
-                    (logging.DEBUG,
-                     '[%s] Could not access neighbor switch',
-                     switch['IPaddress']))
+                self.logger.debug(
+                    '[%s] Could not access neighbor switch',
+                    switch['ip address'])
             # Generate RSA keys. Since we're replacing the startup config, and
             # RSA keys require a "write mem" to be saved, it's okay to save the
             # running config to flash
@@ -545,7 +522,7 @@ class CiscoAutoProvision:
             self._gen_rsa(switch, logfilename=logfilename)
             # open ssh session
             self._ssh_opensession(switch)
-            if switch['IPaddress'] in self.upgrades:
+            if switch['ip address'] in self.upgrades:
                 # In order for the reboot to upgrade the device,
                 # the running configuration must be saved. Therefore
                 # the running-config should be overwritten with the
@@ -557,47 +534,30 @@ class CiscoAutoProvision:
             self._tftp_startup(switch)
             # self._tftp_replace(switch,time=15)
             switch['session'].sendreload('no')
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] Reload command sent. Change feed on [%s] to trunk mode NOW!',
-                 switch['IPaddress'],
-                    switch['neighbors'].keys()[0]))
-            if self._wait(switch['new IPaddress'], timeout=timeout):
-                self._msg.put(
-                    (logging.INFO,
-                     '[%s] Configuration successfully reloaded and is now reachable!',
-                     switch['new IPaddress']))
+            self.logger.info(
+                ('[%s] Configuration finished. Rebooting device to apply '
+                    'changes'), switch['ip address'])
+            if self._wait(switch['new ip address'], timeout=timeout):
+                self.logger.info(
+                    '[%s] Host is back online!', switch['ip address'])
                 switch['success'] = True
                 self._finished.put(switch['new name'])
             else:
-                self._msg.put(
-                    (logging.CRITICAL,
-                     '[%s] Cannot reach via IP after loading startup-config in memory!',
-                     switch['new IPaddress']))
+                self.logger.critical(
+                    '[%s] Timer expired; cannot reach host! Recovery required',
+                    switch['ip address'])
                 switch['success'] = False
             # continual ping
         except sql.IntegrityError:
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] Already being provisioned by another process',
-                 switch['IPaddress']))
+            self.logger.debug(
+                '[%s] Already being provisioned by another process',
+                switch['ip address'])
         except Exception as e:
-            # self.logger.error('Error occurred: %s', e, exc_info=True)
-            # self.logger.error('[%s] Error occurred: %s', switch['IPaddress'],
-            # e, exc_info=True)
-            self._msg.put(
-                ((logging.ERROR,
-                  '[%s] Error occurred: %s',
-                  switch['IPaddress'],
-                    e),
-                    dict(
-                    exc_info=True)))
+            self.logger.error('[%s] Error occurred: %s', switch['ip address'],
+                              e, exc_info=True)
             switch['success'] = False
         finally:
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] Removing from queue',
-                 switch['IPaddress']))
+            self.logger.debug('[%s] Removing from queue', switch['ip address'])
             self._unlock(switch)
 
     def _get_model(self, switch):
@@ -606,9 +566,6 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing all known data on the target
         '''
-        # logger = logging.getLogger('CAP.' + switch['hostname'].split('.')[0])
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
-
         # Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
         # https://supportforums.cisco.com/discussion/9696971/which-oid-used-get-name-cisco-device-boot-image
         # This doesn't show up in new devices, apparently...
@@ -624,7 +581,7 @@ class CiscoAutoProvision:
         bootoid = u'SNMPv2-SMI::enterprises.9.2.1.73.0'
         softimage_raw = snmp_get(
             bootoid,
-            hostname=switch['IPaddress'],
+            hostname=switch['ip address'],
             community=self.community,
             version=2).value
         if len(softimage_raw.split('/')) <= 1:
@@ -634,10 +591,11 @@ class CiscoAutoProvision:
         if not softimage_raw or softimage == 'packages.conf':
             softimage_raw = snmp_get(
                 imageoid,
-                hostname=switch['IPaddress'],
+                hostname=switch['ip address'],
                 community=self.community,
                 version=2).value
-            # softimage_raw = softimage_raw.split("Version")[1].strip().split(" ")[0].split(",")[0]
+            # softimage_raw = softimage_raw.split(
+            #     "Version")[1].strip().split(" ")[0].split(",")[0]
             # softimage = self.rm_nonalnum(softimage_raw)
             # Is there a ##.#(##)EX in the string?
             if re.findall(r'\d+\(.+?\)[eE][xX]', softimage_raw):
@@ -660,51 +618,46 @@ class CiscoAutoProvision:
                     softimage_raw)]
         physical = snmp_walk(
             modeloid,
-            hostname=switch['IPaddress'],
+            hostname=switch['ip address'],
             community=self.community,
             version=2)
         if len(physical[0].value) == 0:
             del physical[0]
         model = str(physical[0].value.split('-')[1])
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] IOS image: %s',
-             switch['IPaddress'],
-                softimage))
+        self.logger.debug(
+            '[%s] IOS image: %s',
+            switch['ip address'],
+            softimage)
         if model not in self.firmwares.keys():
             raise Exception('model' + model + 'not found in firmware list!')
             # TODO: make a way to add firmware
-        elif isinstance(softimage, unicode) and softimage in self.firmwares[model].lower() and (self._k9(softimage) and not '296' in model):
+        elif isinstance(softimage, unicode) and softimage in self.firmwares[
+                model].lower() and (
+                    self._k9(softimage) and '296' not in model):
             switch['crypto'] = True
             switch['model'] = model
             switch['bin'] = self.firmwares[model]
             switch['softimage'] = softimage
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] No upgrade needed. Target IOS: %s',
-                 switch['IPaddress'],
-                    switch['bin']))
-        elif isinstance(softimage, list) and all(x in self.firmwares[model].lower() for x in softimage) and (self._k9(softimage) and not '296' in model):
+            self.logger.debug(
+                '[%s] No upgrade needed. Target IOS: %s', switch['ip address'],
+                switch['bin'])
+        elif isinstance(softimage, list) and all(
+                x in self.firmwares[model].lower() for x in softimage) and (
+                self._k9(softimage) and '296' not in model):
             switch['crypto'] = True
             switch['model'] = model
             switch['bin'] = self.firmwares[model]
             switch['softimage'] = softimage
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] No upgrade needed. Target IOS: %s',
-                 switch['IPaddress'],
-                    switch['bin']))
+            self.logger.debug('[%s] No upgrade needed. Target IOS: %s',
+                              switch['ip address'], switch['bin'])
         else:
             switch['crypto'] = self._k9(softimage)
             switch['model'] = model
             switch['bin'] = self.firmwares[model]
             switch['softimage'] = softimage
-            self.upgrades.append(switch['IPaddress'])
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] Upgrade needed. Target IOS: %s',
-                 switch['IPaddress'],
-                    switch['bin']))
+            self.upgrades.append(switch['ip address'])
+            self.logger.debug('[%s] Upgrade needed. Target IOS: %s',
+                              switch['ip address'], switch['bin'])
 
     def _k9(self, image):
         '''
@@ -728,82 +681,63 @@ class CiscoAutoProvision:
         :param switch: Dictionary representing the target device
         :param logfilename: File to flush Telnet buffer to
         '''
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Attempting to upgrade to K9 binary first',
-             switch['IPaddress']))
+        self.logger.debug('[%s] Attempting to upgrade to K9 binary first',
+                          switch['ip address'])
         # logger.debug('Opening telnet session...')
         # self.logger.debug('[%s] Opening telnet session...',
-        # switch['IPaddress'])
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Opening telnet session...',
-             switch['IPaddress']))
-        d = dict(host=switch['IPaddress'], tftpserver=self.tftp,
+        # switch['ip address'])
+        self.logger.debug('[%s] K9: Opening telnet session...',
+                          switch['ip address'])
+        d = dict(host=switch['ip address'], tftpserver=self.tftp,
                  username=self.suser, password=self.spasswd,
                  logfilename=logfilename, pver3=self.pver3,
                  binary_file=switch['bin'], timeout=self.telnettimeout,
                  enable_password=self.senable, debug=self.debug,
                  )
         sess = None
-        if not self.ping(switch['IPaddress']):
+        if not self.ping(switch['ip address']):
             raise Exception('host not reachable')
         if switch['model'].startswith('C38'):
             sess = cup.ciu3850(**d)
         elif switch['model'].startswith('C45'):
             sess = cup.ciu4500(**d)
         else:
-            # logger.debug('Using default upgrade profile')
-            # self.logger.debug('[%s] Using default upgrade profile',
-            # switch['IPaddress'])
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] K9: Using default upgrade profile',
-                 switch['IPaddress']))
+            self.logger.debug('[%s] K9: Using default upgrade profile',
+                              switch['ip address'])
             sess = cup.ciscoUpgrade(**d)
         # I won't try to catch errors. Let the autoupgrade method handle it
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Setting up TFTP...',
-             switch['IPaddress']))
+        self.logger.debug('[%s] K9: Setting up TFTP...'. switch['ip address'])
         sess.tftp_setup()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Clearing out old software...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] K9: Clearing out old software...',
+            switch['ip address'])
         sess.cleansoftware()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Fetching and verifying image...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] K9: Fetching and verifying image...',
+            switch['ip address'])
         sess.tftp_getimage()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Installing and setting boot image...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] K9: Installing and setting boot image...',
+            switch['ip address'])
         sess.softwareinstall()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Erasing startup-config...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] K9: Erasing startup-config...',
+            switch['ip address'])
         sess.erasestartup()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] K9: Reloading switch!',
-             switch['IPaddress']))
+        self.logger.debug('[%s] K9: Reloading switch!', switch['ip address'])
         sess.sendreload('no')
-        # self._msg.put((logging.DEBUG, '[%s] K9: Reload (probably) sent...',
-        # switch['IPaddress']))
-        self._msg.put(
-            (logging.INFO,
-             '[%s] K9: Rebooting switch; waiting for graceful shutdown before sending pings',
-             switch['IPaddress']))
+        self.logger.info(
+            ('[%s] K9: Rebooting switch; waiting for graceful shutdown before '
+                'sending pings'), switch['ip address'])
         sleep(8)
-        if not self._wait(switch['IPaddress'], timeout=1200):
+        if not self._wait(switch['ip address'], timeout=1200):
             raise Exception(
-                'Switch did not come back online after upgrading it to a crypto version!')
-        self.upgrades.remove(switch['IPaddress'])
-        self._msg.put((logging.DEBUG, '[%s] K9: Validating upgrade...'))
+                ('Switch did not come back online after upgrading it to a '
+                    'crypto version!'))
+        self.upgrades.remove(switch['ip address'])
+        self.logger.debug(
+            '[%s] K9: Validating upgrade...',
+            switch['ip address'])
         try:
             self._get_model(switch)
         except EasySNMPTimeoutError:
@@ -812,10 +746,9 @@ class CiscoAutoProvision:
         if not self._k9(switch['softimage']):
             raise Exception('Switch did not upgrade properly to crypto image!')
         else:
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] K9: Upgrade verified. Resuming normal provisioning procedure.',
-                 switch['IPaddress']))
+            self.logger.debug(
+                ('[%s] K9: Upgrade verified. Resuming normal provisioning '
+                    'procedure.'), switch['ip address'])
 
     def _get_new_name(self, switch):
         r'''
@@ -823,7 +756,7 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
+        # logger = logging.getLogger('CAP.(' + switch['ip address'] + ')')
         oid_index = []
         for neighbor, ports in switch['neighbors'].iteritems():
             alias = snmp_walk(
@@ -843,17 +776,15 @@ class CiscoAutoProvision:
                 newname = alias[int(i) - 1].value.split()[0]
                 if newname:
                     switch['new name'] = newname
-                    self._msg.put(
-                        (logging.INFO,
-                         '[%s] New hostname found from neighrbor\'s port description. To-be: %s',
-                         switch['IPaddress'],
-                            switch['new name']))
+                    self.logger.info(
+                        ('[%s] New hostname found from neighbor\'s port '
+                            'description. To-be: %s'), switch['ip address'],
+                        switch['new name'])
                     pass  # TODO
             except IndexError:
-                self._msg.put(
-                    (logging.WARNING,
-                     '[%s] Target hostname was not found on a neighboring switch!',
-                     switch['IPaddress']))
+                self.logger.warning(
+                    ('[%s] Target hostname was not found on a neighboring '
+                     'switch!'), switch['ip address'])
 
     def _get_serial(self, switch):
         r'''
@@ -861,19 +792,13 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
+        # logger = logging.getLogger('CAP.(' + switch['ip address'] + ')')
         serialnum = self.getoids[switch['model']](
-            switch['IPaddress'], self.community)
+            switch['ip address'], self.community)
         if serialnum:
             switch['serial'] = serialnum
-            # logger.info('Serial number: %s', serialnum)
-            # self.logger.info('[%s] Serial number: %s', switch['IPaddress'],
-            # serialnum)
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] Serial number: %s',
-                 switch['IPaddress'],
-                    serialnum))
+            self.logger.info('[%s] Serial number: %s', switch['ip address'],
+                             serialnum)
 
     def _ssh_opensession(self, switch):
         r'''
@@ -883,25 +808,21 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        d = dict(host=switch['IPaddress'], tftpserver=self.tftp,
+        d = dict(host=switch['ip address'], tftpserver=self.tftp,
                  binary_file=switch['bin'],
                  username=self.suser, password=self.spasswd,
                  enable_password=self.senable, debug=self.debug)
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Preparing SSH session',
-             switch['IPaddress']))
-        if not self.ping(switch['IPaddress']):
+        self.logger.debug('[%s] Preparing SSH session', switch['ip address'])
+        if not self.ping(switch['ip address']):
             raise Exception('host not reachable')
         if switch['model'].startswith('C38'):
             switch['session'] = cup.c38xxUpgrade(**d)
         elif switch['model'].startswith('C45'):
             switch['session'] = cup.c45xxUpgrade(**d)
         else:
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] Using default upgrade profile',
-                 switch['IPaddress']))
+            self.logger.debug(
+                '[%s] Using default upgrade profile',
+                switch['ip address'])
             switch['session'] = cup.ciscoUpgrade(**d)
 
     def _prepupgrade(self, switch):
@@ -910,25 +831,17 @@ class CiscoAutoProvision:
 
         :param switch: Dictionary representing the target device
         '''
-        self._msg.put(
-            (logging.INFO,
-             '[%s] Preparing upgrade process...',
-             switch['IPaddress']))
+        self.logger.info(
+            '[%s] Preparing upgrade process...',
+            switch['ip address'])
         switch['session'].tftp_setup()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Clearing out old images...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] Clearing out old images...',
+            switch['ip address'])
         switch['session'].cleansoftware()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Retrieving IOS image...',
-             switch['IPaddress']))
+        self.logger.debug('[%s] Retrieving IOS image...', switch['ip address'])
         switch['session'].tftp_getimage()
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Installing software...',
-             switch['IPaddress']))
+        self.logger.debug('[%s] Installing software...', switch['ip address'])
         switch['session'].softwareinstall()
 
     def _tftp_replace(self, switch, time):
@@ -939,17 +852,15 @@ class CiscoAutoProvision:
         :param switch: Dictionary representing the target device
         :param time: Timeout period, in seconds, before giving up
         '''
-        if 'new IPaddress' in switch.keys():
+        if 'new ip address' in switch.keys():
             switch['session'].tftp_replaceconf(timeout=time)
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] Startup-config successfully transferred',
-                 switch['IPaddress']))
+            self.logger.info(
+                '[%s] Startup-config successfully transferred',
+                switch['ip address'])
         else:
-            self._msg.put(
-                (logging.WARNING,
-                 '[%s] Unable to find a configuration file on TFTP server!',
-                 switch['IPaddress']))
+            self.logger.warning(
+                '[%s] Unable to find a configuration file on TFTP server!',
+                switch['ip address'])
         del switch['session']
 
     def _tftp_startup(self, switch):
@@ -968,31 +879,27 @@ class CiscoAutoProvision:
                 found_config = self._startupcfg(
                     switch=switch, remotefilename=dir_prefix + filename)
                 if found_config:
-                    self._msg.put(
-                        (logging.INFO,
-                         '[%s] Using config that matches the serial number!',
-                         switch['IPaddress']))
+                    self.logger.info(
+                        '[%s] Using config that matches the serial number!',
+                        switch['ip address'])
                     # switch['serial'] = [serial]
                     break
         if not found_config and 'new name' in switch.keys():
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] No config matches serial number. Searching for one based on CDP neighbor\'s port description',
-                 switch['IPaddress']))
+            self.logger.info(
+                ('[%s] No config matches serial number. Searching for one '
+                 'based on CDP neighbor\'s port description'),
+                switch['ip address'])
             filename = '/' + switch['new name'].lower() + '-confg'
             found_config = self._startupcfg(
                 switch=switch, remotefilename=filename)
             if found_config:
-                self._msg.put(
-                    (logging.INFO,
-                     '[%s] Found a config file based on hostname. Will use "%s"',
-                     switch['IPaddress'],
-                        filename))
+                self.logger.info(
+                    '[%s] Found a config file based on hostname: "%s"',
+                    switch['ip address'], filename)
         if not found_config:
-            self._msg.put(
-                (logging.WARNING,
-                 '[%s] Unable to find target config file. Resorting to model default!',
-                 switch['IPaddress']))
+            self.logger.warning(
+                ('Unable to find target config file. Resorting to model '
+                 'default!'), switch['ip address'])
             dir_prefix = '/autoprov'
             filename = '/cap' + switch['model'].lower() + '-confg'
             found_config = self._startupcfg(
@@ -1000,7 +907,7 @@ class CiscoAutoProvision:
         if not found_config:
             raise Exception(
                 'not able to find any config files for switch ' +
-                switch['IPaddress'])
+                switch['ip address'])
 
     def _startupcfg(self, switch, remotefilename):
         r'''
@@ -1025,8 +932,9 @@ class CiscoAutoProvision:
             # would be closed in the event of an interrupt
             try:
                 results = re.findall(
-                    r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s(?:\d{1,3}\.){3}\d{1,3})', log)
-                switch['new IPaddress'] = map(lambda g0_g1: g0_g1[1], results)
+                    (r'\s(ip\saddress\s((?:\d{1,3}\.){3}\d{1,3})\s'
+                        r'(?:\d{1,3}\.){3}\d{1,3})'), log)
+                switch['new ip address'] = map(lambda g0_g1: g0_g1[1], results)
                 results = re.findall(r'hostname\s([\S]+)', log)
                 if results:
                     switch['hew name'] = results[0]
@@ -1034,11 +942,10 @@ class CiscoAutoProvision:
                 raise e
             finally:
                 log.close()
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] New ip address: %s',
-                 switch['IPaddress'],
-                    switch['new IPaddress']))
+            self.logger.debug(
+                '[%s] New ip address: %s',
+                switch['ip address'],
+                switch['new ip address'])
             switch['session'].tftp_getstartup(remotefilename)
         return success
 
@@ -1062,26 +969,18 @@ class CiscoAutoProvision:
         :param switch: Dictionary representing the target device
         :param logfilename: File to flush the Telnet session buffer to
         '''
-        # logger = logging.getLogger('CAP.(' + switch['IPaddress'] + ')')
-        # self.logger.debug('[%s] Attempting to setup RSA keys',
-        # switch['IPaddress'])
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Attempting to setup RSA keys',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] Attempting to setup RSA keys',
+            switch['ip address'])
         if self.pver3:
-            s = pexpect.spawnu('telnet ' + switch['IPaddress'])
+            s = pexpect.spawnu('telnet ' + switch['ip address'])
         else:
-            s = pexpect.spawn('telnet ' + switch['IPaddress'])
+            s = pexpect.spawn('telnet ' + switch['ip address'])
         s.timeout = self.telnettimeout
         s.logfile = open(logfilename, 'w')
-        # logger.debug('Opening telnet session...')
-        # self.logger.debug('[%s] Opening telnet session...',
-        # switch['IPaddress'])
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Opening telnet session...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] Opening telnet session...',
+            switch['ip address'])
         s.expect('Username: ')
         s.sendline(self.suser)
         s.expect('Password: ')
@@ -1091,13 +990,9 @@ class CiscoAutoProvision:
         s.expect('Password: ')
         s.sendline(self.senable)
         s.expect('#')
-        # logger.debug('Setting up environment...')
-        # self.logger.debug('[%s] Setting up environment...', switch['IP
-        # address'])
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Setting up environment...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] Setting up environment...',
+            switch['ip address'])
         s.send('')
         s.sendline('terminal length 0')
         s.expect('#')
@@ -1110,13 +1005,9 @@ class CiscoAutoProvision:
         s.sendline('config t')
         s.expect('\)#')
         if 'name' in keyout:
-            # logger.debug('Erasing all existing keys...')
-            # self.logger.debug('[%s] Erasing all existing keys...',
-            # switch['IPaddress'])
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] Erasing all existing keys...',
-                 switch['IPaddress']))
+            self.logger.debug(
+                '[%s] Erasing all existing keys...',
+                switch['ip address'])
             s.sendline('crypto key zeroize rsa')
             s.expect('\]: ')
             s.sendline('yes')
@@ -1136,17 +1027,16 @@ class CiscoAutoProvision:
             keysize = '2048'  # Default if didn't split the output correctly
         s.sendline(keysize)
         if '3750' in switch['model'] and int(keysize) > 2048:
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] Switch is a 3750X. Generating a 4096-bit key will take a while.',
-                 switch['IPaddress']))
+            self.logger.info(
+                ('[%s] Switch is a 3750X. Generating a 4096-bit key will take '
+                 'a while.'),
+                switch['ip address'])
             s.expect('#', timeout=600)
         else:
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] Generating a %s-bit RSA keypair.',
-                 switch['IPaddress'],
-                    keysize))
+            self.logger.info(
+                '[%s] Generating a %s-bit RSA keypair.',
+                switch['ip address'],
+                keysize)
             s.expect('#', timeout=300)
         successful = True if '[OK]' in s.before else False
         s.sendline('ip ssh version 2')
@@ -1156,32 +1046,23 @@ class CiscoAutoProvision:
         s.expect('#')
         s.sendline('exit')
         s.expect('#')
-        self._msg.put(
-            (logging.DEBUG,
-             '[%s] Saving RSA keys (and running-config)...',
-             switch['IPaddress']))
+        self.logger.debug(
+            '[%s] Saving RSA keys (and running-config)...',
+            switch['ip address'])
         s.sendline('write mem')
         s.send('')
         s.expect('#')
         s.logfile.close()
         s.close()
         if not successful:
-            # logger.debug(s.before)
-            # self.logger.debug('[%s] :: %s', switch['IPaddress'], s.before)
-            self._msg.put(
-                (logging.DEBUG,
-                 '[%s] :: %s',
-                 switch['IPaddress'],
-                    s.before))
+            self.logger.debug('[%s] :: %s', switch['ip address'], s.before)
+            # self.logger.debug('%s', s.before)
             raise Exception('RSA key was not generated successfully!')
         else:
             # logger.info('RSA key was imported successfully!')
-            # self.logger.info('[%s] RSA key was imported successfully!',
-            # switch['IPaddress'])
-            self._msg.put(
-                (logging.INFO,
-                 '[%s] RSA key was generated successfully!',
-                 switch['IPaddress']))
+            self.logger.info('[%s] RSA key was imported successfully!',
+                             switch['ip address'])
+            # self.logger.info('RSA key was generated successfully!')
 
     def _lock(self, switch):
         r'''
@@ -1205,9 +1086,10 @@ class CiscoAutoProvision:
         process is currently handling the provisioning. Both tables, named
         'devices' and 'locked', use the following schema:
 
-        +-----------+---------+------------+-------------------------+-----------+
-        | name TEXT | ip TEXT | model TEXT | serial TEXT PRIMARY KEY | date TEXT |
-        +-----------+---------+------------+-------------------------+-----------+
+        +------+------+-------+-------------+------+
+        | name | ip   | model | serial TEXT | date |
+        | TEXT | TEXT | TEXT  | PRIMARY KEY | TEXT |
+        +------+------+-------+-------------+------+
 
         :param switch: Dictionary representing data on the target device. This
                        **must** contain the hostname, IP, model, and serial no.
@@ -1216,7 +1098,7 @@ class CiscoAutoProvision:
             try:
                 device = (
                     switch['hostname'],
-                    switch['IPaddress'],
+                    switch['ip address'],
                     switch['model'],
                     switch['serial'][0],
                     strftime(
@@ -1228,10 +1110,13 @@ class CiscoAutoProvision:
                 # Initialize tables, if not already existant
                 # When tables are created, the DB immediately commits them.
                 # Another process may, however, lock the table between CREATEs
-                c.execute('''CREATE TABLE IF NOT EXISTS devices
-                                (name text, ip text, model text, serial text primary key, date text)''')
-                c.execute('''CREATE TABLE IF NOT EXISTS locked
-                                (name text, ip text, model text, serial text primary key, date text)''')
+                c.execute(
+                    ('CREATE TABLE IF NOT EXISTS devices (name text, '
+                     'ip text, model text, serial text primary key, '
+                     'date text)'))
+                c.execute(
+                    ('CREATE TABLE IF NOT EXISTS locked (name text, ip text, '
+                     'model text, serial text primary key, date text)'))
                 # Lock device first; this will abort the provisioning process
                 # if another one is already working on it
                 c.execute('INSERT INTO locked VALUES (?,?,?,?,?)', device)
@@ -1239,10 +1124,9 @@ class CiscoAutoProvision:
                 c.execute(
                     'INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?)',
                     device)
-                self._msg.put(
-                    (logging.DEBUG,
-                     '[%s] Placed lock on device',
-                     switch['IPaddress']))
+                self.logger.debug(
+                    '[%s] Placed lock on device',
+                    switch['ip address'])
                 conn.commit()
                 break
             # Database is currently locked; try again
@@ -1279,9 +1163,10 @@ class CiscoAutoProvision:
         the :py:meth:`_lock` method, however the 'failures' table uses the
         following:
 
-        +-----------+---------+------------+-------------------------+-----------+------------------+----------------+
-        | name TEXT | ip TEXT | model TEXT | serial TEXT PRIMARY KEY | date TEXT | attempts INTEGER | notify INTEGER |
-        +-----------+---------+------------+-------------------------+-----------+------------------+----------------+
+        +------+------+-------+-------------+------+----------+---------+
+        | name | ip   | model | serial TEXT | date | attempts | notify  |
+        | TEXT | TEXT | TEXT  | PRIMARY KEY | TEXT | INTEGER  | INTEGER |
+        +------+------+-------+-------------+------+----------+---------+
 
         :param switch: Dictionary representing data on the target device. This
                        **must** contain the hostname, IP, model, and serial no.
@@ -1295,58 +1180,59 @@ class CiscoAutoProvision:
                 db = os.path.join(self.database, 'lockfile.db')
                 conn = sql.connect(db)
                 c = conn.cursor()
-                c.execute('''CREATE TABLE IF NOT EXISTS success
-                                (name text, ip text, model text, serial text primary key, date text)''')
-                c.execute('''CREATE TABLE IF NOT EXISTS failure
-                                (name text, ip text, model text, serial text primary key, date text, attempts integer, notify text)''')
+                c.execute((
+                    'CREATE TABLE IF NOT EXISTS success (name text, ip text, '
+                    'model text, serial text primary key, date text)'))
+                c.execute(('CREATE TABLE IF NOT EXISTS failure (name text, '
+                           'ip text, model text, serial text primary key, '
+                           'date text, attempts integer, notify text)'))
                 # Even if it's not in the table for some reason, this won't
                 # raise an error
                 c.execute(
                     'DELETE FROM locked WHERE serial = ?', [
                         switch['serial'][0]])
-                self._msg.put(
-                    (logging.DEBUG,
-                     '[%s] Removed lock on device',
-                     switch['IPaddress']))
+                self.logger.debug(
+                    '[%s] Removed lock on device',
+                    switch['ip address'])
                 if switch['success']:
                     # TODO: Notification of success/failure
                     device = (
                         switch['hostname'],
-                        switch['IPaddress'],
+                        switch['ip address'],
                         switch['model'],
                         switch['serial'][0],
                         strftime(
                             '%a %b %d %Y %H:%M:%S',
                             localtime()))
                     c.execute(
-                        'INSERT OR REPLACE INTO success VALUES (?,?,?,?,?)', device)
+                        'INSERT OR REPLACE INTO success VALUES (?,?,?,?,?)',
+                        device)
                     c.execute(
                         'DELETE FROM failure WHERE serial = ?', [
                             switch['serial'][0]])
-                    self._msg.put(
-                        (logging.DEBUG,
-                         '[%s] Recorded success into database',
-                         switch['IPaddress']))
+                    self.logger.debug(
+                        '[%s] Recorded success into database',
+                        switch['ip address'])
                 else:
                     c.execute('SELECT * FROM failure WHERE serial = ?',
                               [switch['serial'][0]])
                     d = c.fetchone()
                     if d:
                         c.execute(
-                            'UPDATE failure SET attempts = attempts + 1, date = ? WHERE serial = ?',
+                            ('UPDATE failure SET attempts = attempts + 1, '
+                                'date = ? WHERE serial = ?'),
                             (strftime(
                                 '%a %b %d %Y %H:%M:%S',
                                 localtime()),
                                 switch['serial'][0]))
-                        self._msg.put(
-                            (logging.DEBUG,
-                             '[%s] Updated provisioning failure count in database',
-                             switch['IPaddress']))
+                        self.logger.debug(
+                            ('[%s] Updated provisioning failure count in '
+                             'database'), switch['ip address'])
                     else:
                         c.execute(
                             'INSERT INTO failure VALUES (?,?,?,?,?,?,?)',
                             (switch['hostname'],
-                             switch['IPaddress'],
+                             switch['ip address'],
                                 switch['model'],
                                 switch['serial'][0],
                                 strftime(
@@ -1354,10 +1240,9 @@ class CiscoAutoProvision:
                                 localtime()),
                                 1,
                                 'FALSE'))
-                        self._msg.put(
-                            (logging.DEBUG,
-                             '[%s] Recorded provisioning failure into database',
-                             switch['IPaddress']))
+                        self.logger.debug(
+                            '[%s] Recorded provisioning failure into database',
+                            switch['ip address'])
                 conn.commit()
                 conn.close()
                 return True
@@ -1384,7 +1269,7 @@ class CiscoAutoProvision:
         # TODO: Allow simultaneous ping attempts
         if isinstance(target, list):
             target = target[0]
-        self._msg.put((logging.INFO, 'Pinging %s', target))
+        self.logger.info('[%s] Waiting for device to come back online', target)
         attempts = 1
         cycle = cycle if cycle > 5 else 5
         timeout = timeout if timeout >= 30 else 300
@@ -1393,22 +1278,17 @@ class CiscoAutoProvision:
             if self.debug:
                 # self.logger.debug('%s: sending ping %i of %i', target,
                 # attempts, retries)
-                self._msg.put(
-                    (logging.DEBUG,
-                     '[%s]: Sending ping %i of %i',
-                     target,
-                     attempts,
-                     retries))
+                self.logger.debug('[%s] Sending ping %i of %i',
+                                  target, attempts, retries)
             if self.ping(target):
-                self._msg.put(
-                    (logging.INFO, '[%s] Responded to ping!', target))
+                self.logger.info('[%s] Responded to ping!', target)
                 return True
             sleep(cycle - 1)
             # Timeout is 1, so remove that from the overall wait
             timeout -= cycle
             attempts += 1
         # self.logger.warning('%s did not respond to pings!', target)
-        self._msg.put((logging.WARNING, '[%s] Timed out!', target))
+        self.logger.warning('[%s] Timed out!', target)
         return False
 
     def sendalerts(self):
@@ -1430,7 +1310,8 @@ class CiscoAutoProvision:
         if not self._finished.empty():
             while not self._finished.empty():
                 devices.append(self._finished.get())
-            success = '''The following device(s) were successfully provisioned:\n\t{0}\n'''.format(
+            success = ('The following device(s) were successfully provisioned:'
+                       '\n\t{0}\n').format(
                 '\n\t'.join(devices))
             self.logger.debug(
                 'Generated list of successfully provisioned devices')
@@ -1439,18 +1320,20 @@ class CiscoAutoProvision:
             conn = sql.connect(db)
             c = conn.cursor()
             c.execute(
-                'SELECT ip FROM failure WHERE attempts > ? AND notify == \'FALSE\'', [
-                    self.alerts['threshold']])
+                ('SELECT ip FROM failure WHERE attempts > ? AND notify == '
+                    '\'FALSE\''), [self.alerts['threshold']])
             devices = c.fetchall()
             if devices:
-                failure = '''The following device(s) could not be provisioned:\n\t{0}\n'''.format(
+                failure = ('The following device(s) could not be provisioned:'
+                           '\n\t{0}\n').format(
                     '\n\t'.join([d[0] for d in devices]))
                 c.executemany(
-                    'UPDATE failure SET notify = \'TRUE\' WHERE ip = ?', devices)
+                    'UPDATE failure SET notify = \'TRUE\' WHERE ip = ?',
+                    devices)
                 conn.commit()
                 self.logger.debug(
-                    'Generated list of devices that failed to be provisioned over ' + str(
-                        self.alerts['threshold']) + ' attempts.')
+                    ('Generated list of devices that failed to be provisioned '
+                     'over ' + str(self.alerts['threshold']) + ' attempts.'))
         except Exception:
             self.logger.error('Error generating email alert!', exc_info=True)
         finally:
@@ -1476,19 +1359,53 @@ class CiscoAutoProvision:
             self.logger.debug('No email was sent.')
 
     getoids = {
-        'C4506': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
-        'C4506R': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
-        'C4507': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
-        'C3850': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1', '1000', '2000', '3000', '4000', '5000', '6000', '7000', '8000', '9000']],
-        'C3750X': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
-        'C3750V2': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
-        'C3750': lambda hostname, community: [x.value for x in snmp_walk(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in ['1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001', '9001']],
-        'C3560': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-        'C3560X': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-        'C3560CG': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-        'C3560CX': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-        'C2940': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
-        'C2960': lambda hostname, community: [snmp_get(hostname=hostname, version=2, community=community, oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value]
+        'C4506': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+        'C4506R': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+        'C4507': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1').value],
+        'C3850': lambda hostname, community: [x.value for x in snmp_walk(
+            hostname=hostname, version=2, community=community,
+            oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in [
+                '1', '1000', '2000', '3000', '4000', '5000', '6000', '7000',
+                '8000', '9000']],
+        'C3750X': lambda hostname, community: [x.value for x in snmp_walk(
+            hostname=hostname, version=2, community=community,
+            oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in [
+                '1001', '2001', '3001', '4001', '5001', '6001', '7001',
+                '8001', '9001']],
+        'C3750V2': lambda hostname, community: [x.value for x in snmp_walk(
+            hostname=hostname, version=2, community=community,
+            oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in [
+                '1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001',
+                '9001']],
+        'C3750': lambda hostname, community: [x.value for x in snmp_walk(
+            hostname=hostname, version=2, community=community,
+            oids='.1.3.6.1.2.1.47.1.1.1.1.11') if x.oid_index in [
+                '1001', '2001', '3001', '4001', '5001', '6001', '7001', '8001',
+                '9001']],
+        'C3560': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+        'C3560X': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+        'C3560CG': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+        'C3560CX': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+        'C2940': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value],
+        'C2960': lambda hostname, community: [
+            snmp_get(hostname=hostname, version=2, community=community,
+                     oids='.1.3.6.1.2.1.47.1.1.1.1.11.1001').value]
     }
 
 
@@ -1562,7 +1479,7 @@ class CapTest(CiscoAutoProvision):
         self.logger.info('Starting Autoprovision process')
         self._remaining = []
         for switch in self.switches:
-            self._remaining.append(switch['IPaddress'])
+            self._remaining.append(switch['ip address'])
             self.logger.debug(
                 'Creating a process for ' +
                 switch['hostname'] +
@@ -1570,22 +1487,22 @@ class CapTest(CiscoAutoProvision):
             # , callback=self._decr)  # Python 3 has an error_callback. Nice...
             p = Process(target=self.autoupgrade, args=(switch,))
             p.start()
-            while p.is_alive() or not self._msg.empty():
-                if not self._msg.empty():
-                    log = self._msg.get()
+            while p.is_alive() or not self.logger.empty():
+                if not self.logger.empty():
+                    log = self.logger.get()
                     if isinstance(log[-1], dict):  # Contains `exc_info=True`
                         self.logger.log(*log[0], **log[1])
                     else:
                         self.logger.log(*log)
             p.join()
-            self._rem(switch['IPaddress'])
+            self._rem(switch['ip address'])
         # Extra safety net, just in case an error kills the pool prematurely.
         # The pool closed on me early last night and finished the script,
         # however a worker was still TFTP'ing (and printing out) in the
         # background
-        while not self._msg.empty():
-            if not self._msg.empty():
-                log = self._msg.get()
+        while not self.logger.empty():
+            if not self.logger.empty():
+                log = self.logger.get()
                 if isinstance(log[-1], dict):  # Contains `exc_info=True`
                     self.logger.log(*log[0], **log[1])
                 else:
@@ -1595,14 +1512,14 @@ class CapTest(CiscoAutoProvision):
     def editswitchlist(self):
         for index, switch in enumerate(self.switches):
             print(str(index) + ': ' +
-                  switch['IPaddress'] + '\t' + switch['hostname'])
+                  switch['ip address'] + '\t' + switch['hostname'])
             r = -69
         while r not in [''] + map(lambda x_y: str(x_y[0]),
                                   enumerate(self.switches)):
             r = raw_input(
                 'Enter switch number to pop. leave empty to stop editing.')
         if r and r.isdigit():
-            print(self.switches[int(r)]['IPaddress'] + ' was removed')
+            print(self.switches[int(r)]['ip address'] + ' was removed')
             self.switches.pop(int(r))
 
     def get_information(self):
@@ -1612,13 +1529,13 @@ class CapTest(CiscoAutoProvision):
                 self.logger.debug(
                     'IP for %s:\t%s',
                     switch['hostname'],
-                    switch['IPaddress'])
+                    switch['ip address'])
                 try:
                     self._get_model(switch)
                     self._get_serial(switch)
                 except EasySNMPTimeoutError:
                     self.logger.debug(
-                        '%s timed out', switch['IPaddress'], exc_info=True)
+                        '%s timed out', switch['ip address'], exc_info=True)
                     to_pop.append(switch)
                     continue
                 try:
@@ -1628,12 +1545,12 @@ class CapTest(CiscoAutoProvision):
             except Exception:
                 self.logger.error(
                     'Failed to retrieve information from %s',
-                    switch['IPaddress'],
+                    switch['ip address'],
                     exc_info=True)
         for s in to_pop:
             self.logger.info(
                 'Removing %s from switch list',
-                switch['IPaddress'])
+                switch['ip address'])
             self.switches.pop(self.switches.index(s))
 
     def upgradeall(self):
@@ -1643,11 +1560,13 @@ class CapTest(CiscoAutoProvision):
     def get_model(self):
         for switch in self.switches:
             try:
-                self.logger.debug('Fetching model for %s', switch['IPaddress'])
+                self.logger.debug(
+                    'Fetching model for %s',
+                    switch['ip address'])
                 self._get_model(switch)
             except Exception as e:
                 self.logger.warning(
-                    '%s timed out. (%s)', switch['IPaddress'], e)
+                    '%s timed out. (%s)', switch['ip address'], e)
 
     def get_new_name(self):
         for switch in self.switches:
@@ -1656,22 +1575,22 @@ class CapTest(CiscoAutoProvision):
             except:
                 self.logger.warning(
                     'Could not get new name for %s',
-                    switch['IPaddress'],
+                    switch['ip address'],
                     exc_info=True)
 
     def get_serial(self):
         for switch in self.switches:
             try:
                 switch['serial'] = self.getoids[switch['model']](
-                    switch['IPaddress'], self.community)
+                    switch['ip address'], self.community)
                 self.logger.debug(
                     'Serial no. for %s is %s',
-                    switch['IPaddress'],
+                    switch['ip address'],
                     switch['serial'])
             except Exception:
                 self.logger.error(
                     'Failed to get serial for %s',
-                    switch['IPaddress'],
+                    switch['ip address'],
                     exc_info=True)
 
     def ssh_opensession(self):
@@ -1681,28 +1600,28 @@ class CapTest(CiscoAutoProvision):
             except Exception as e:
                 self.logger.warning(
                     'Failed to open SSH session for %s!',
-                    switch['IPaddress'])
+                    switch['ip address'])
                 self.logger.error('%s', e, exc_info=True)
 
     def prepupgrade(self):
         for switch in self.switches:
-            if switch['IPaddress'] in self.upgrades:
+            if switch['ip address'] in self.upgrades:
                 try:
                     self._prepupgrade(switch)
                 except Exception as e:
                     self.logger.warning(
-                        'Failed to upgrade %s!', switch['IPaddress'])
+                        'Failed to upgrade %s!', switch['ip address'])
                     self.logger.error('%s', e, exc_info=True)
 
     def tftp_replace(self):
         for switch in self.switches:
-            if switch['IPaddress'] not in self.upgrades:
+            if switch['ip address'] not in self.upgrades:
                 try:
                     self._tftp_replace(switch, time=17)
                 except Exception as e:
                     self.logger.warning(
                         'Could not transfer config file for %s!',
-                        switch['IPaddress'])
+                        switch['ip address'])
                     self.logger.error('%s', e, exc_info=True)
 
     def tftp_startup(self):
@@ -1720,7 +1639,7 @@ class CapTest(CiscoAutoProvision):
                 self._tftp_startup(switch)
             except Exception as e:
                 self.logger.error(
-                    '%s: %s', switch['IPaddress'], e, exc_info=True)
+                    '%s: %s', switch['ip address'], e, exc_info=True)
 
     def reboot_save(self):
         for switch in self.switches:
@@ -1728,7 +1647,7 @@ class CapTest(CiscoAutoProvision):
                 switch['session'].sendreload('no')
             except Exception as e:
                 self.logger.warning(
-                    '%s: %s', switch['IPaddress'], e, exc_info=True)
+                    '%s: %s', switch['ip address'], e, exc_info=True)
 
     def generate_rsa(self):
         for switch in self.switches:
@@ -1736,11 +1655,11 @@ class CapTest(CiscoAutoProvision):
                 logfilename = os.path.abspath(
                     os.path.join(
                         self.output_dir,
-                        switch['IPaddress'] +
+                        switch['ip address'] +
                         'log.txt'))
                 self._gen_rsa(switch, logfilename=logfilename)
             except Exception as e:
-                self.logger.error('%s: %s', switch['IPaddress'], e)
+                self.logger.error('%s: %s', switch['ip address'], e)
                 # print(e)
                 if self.debug:
                     with open(logfilename, "r") as f:
