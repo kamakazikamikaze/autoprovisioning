@@ -3,7 +3,8 @@ from alerts import emailAlert
 from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr  # , gethostbyname
 import logging
-from time import localtime, strftime, sleep
+from time import sleep
+from datetime import datetime as dt
 import pexpect
 import requests
 from pprint import pformat
@@ -149,6 +150,8 @@ class CiscoAutoProvision:
         self._setuplogger()
         self.logger.debug('Class instance created.')
         self._finished = Manager().Queue()
+
+    timestr = '%a %b %d %Y %H:%M:%S'
 
     def __getstate__(self):
         # When the instance object is being serialized, this method is called.
@@ -1102,9 +1105,7 @@ class CiscoAutoProvision:
                     switch['ip address'],
                     switch['model'],
                     switch['serial'][0],
-                    strftime(
-                        '%a %b %d %Y %H:%M:%S',
-                        localtime()))
+                    dt.now().strftime(self.timestr))
                 db = os.path.join(self.database, 'lockfile.db')
                 conn = sql.connect(db)
                 c = conn.cursor()
@@ -1210,9 +1211,7 @@ class CiscoAutoProvision:
                         switch['ip address'],
                         switch['model'],
                         switch['serial'][0],
-                        strftime(
-                            '%a %b %d %Y %H:%M:%S',
-                            localtime()))
+                        dt.now().strftime(self.timestr))
                     c.execute(
                         'INSERT OR REPLACE INTO success VALUES (?,?,?,?,?)',
                         device)
@@ -1230,9 +1229,7 @@ class CiscoAutoProvision:
                         c.execute(
                             ('UPDATE failure SET attempts = attempts + 1, '
                                 'date = ? WHERE serial = ?'),
-                            (strftime(
-                                '%a %b %d %Y %H:%M:%S',
-                                localtime()),
+                            (dt.now().strftime(self.timestr),
                                 switch['serial'][0]))
                         self.logger.debug(
                             ('[%s] Updated provisioning failure count in '
@@ -1244,9 +1241,7 @@ class CiscoAutoProvision:
                              switch['ip address'],
                                 switch['model'],
                                 switch['serial'][0],
-                                strftime(
-                                '%a %b %d %Y %H:%M:%S',
-                                localtime()),
+                                dt.now().strftime(self.timestr),
                                 1,
                                 'FALSE'))
                         self.logger.debug(
@@ -1360,7 +1355,7 @@ class CiscoAutoProvision:
         email = emailAlert(**a)
         if message:
             message += '\n\nThis alert was generated at {0}\n'.format(
-                strftime('%a %b %d %Y %H:%M:%S', localtime()))
+                dt.now().strftime(self.timestr))
             email.send(
                 self.alerts['recipients'],
                 message,
@@ -1379,13 +1374,16 @@ class CiscoAutoProvision:
                 c.execute(('CREATE TABLE IF NOT EXISTS failure (name text, '
                            'ip text, model text, serial text primary key, '
                            'date text, attempts integer, notify text)'))
-                c.execute(
-                    ('SELECT * FROM failure WHERE attempts >= ? AND notify == '
-                     '\'TRUE\''), (self.alerts['threshold'],))
+                c.execute('SELECT * FROM failure')
                 rows = c.fetchall()
                 if rows:
                     c.executemany('DELETE FROM failure WHERE serial = ?',
-                                  [(row[3],) for row in rows])
+                                  [(row[3],) for row in rows if (
+                                      row[5] >= self.alerts['threshold'] or (
+                                          dt.now() - dt.strptime(
+                                              row[4], self.timestr)
+                                      ).days >= 30)]
+                                  )
                 conn.commit()
                 self.logger.info('Flushed stale failure logs from database')
                 return
