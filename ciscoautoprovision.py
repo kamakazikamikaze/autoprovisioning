@@ -1095,6 +1095,9 @@ class CiscoAutoProvision:
         | TEXT | TEXT | TEXT  | PRIMARY KEY | TEXT |
         +------+------+-------+-------------+------+
 
+        Any devices that have passed the threshold of allowed provisioning will
+        be ignored.
+
         :param switch: Dictionary representing data on the target device. This
                        **must** contain the hostname, IP, model, and serial no.
         '''
@@ -1366,6 +1369,17 @@ class CiscoAutoProvision:
             self.logger.debug('No email was sent.')
 
     def flushfailures(self):
+        '''
+        Clear database of old entries
+
+        Removes rows that currently or could potentially prevent reuse of
+        switches that previously failed to provision properly. Eliminates the
+        need of users having to memorize SQL queries for DB management.
+
+        By default, entries older than 30 days or those that have
+        reached/passed the threshold of failures before abandoning (also having
+        triggered alerts to admins) will be removed.
+        '''
         while True:
             try:
                 db = os.path.join(self.database, 'lockfile.db')

@@ -7,14 +7,12 @@ ciscoautoprovision module
 
 .. _cap-api:
 
-CiscoAutoProvision API
-----------------------
+CiscoAutoProvision class
+------------------------
+
 
 .. autoclass:: CiscoAutoProvision
-   :members: run, autoupgrade, _setuplogger, ping, _parseconfig, search, _k9,
-   			 _upgradefirst, _get_new_name, _get_serial, _ssh_opensession,
-   			 _prepupgrade, _tftp_replace, _tftp_replace, _tftp_startup,
-   			 _startupcfg, _gen_rsa, _lock, _unlock, _wait, sendalerts
+   :members: run, autoupgrade, ping, search, sendalerts
 
 Helper class
 ------------

@@ -2,7 +2,6 @@ Welcome to Pathway Engineering's Autoprovisioning
 =================================================
 *Setting up switches by outsourcing to software*
 
-
 Introduction
 ------------
 
@@ -29,6 +28,8 @@ Contents:
    ciscoautoprovision_api
    ciscoupgrade_api
    alerts_api
+   dev_api
+   authors
 
 Indices and tables
 ==================
@@ -36,4 +37,3 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
-
