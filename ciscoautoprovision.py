@@ -545,7 +545,10 @@ class CiscoAutoProvision:
                 self.logger.info(
                     '[%s] Host is back online!', switch['ip address'])
                 switch['success'] = True
-                self._finished.put(switch['new name'])
+                try:
+                    self._finished.put(switch['new name'])
+                except KeyError:
+                    self._finished.put(switch['ip address'])
             else:
                 self.logger.critical(
                     '[%s] Timer expired; cannot reach host! Recovery required',
@@ -1123,7 +1126,7 @@ class CiscoAutoProvision:
                 d = c.fetchone()
                 if d and d[5] >= self.alerts['threshold']:
                     raise sql.OperationalError(
-                        ('Device has failed to be provisioned too many times!'
+                        ('Device has failed provisioning too many times! '
                          'Will not attempt again until device is removed from '
                          'the database.'))
                 c.execute(
