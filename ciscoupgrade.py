@@ -97,9 +97,9 @@ class ciscoUpgrade:
         All commands sent to the target are completed through this method. It
         does *not* integrate a timer; it will continue to read from the buffer
         indefinitely until the expected character/group is discovered. It
-        automatically sends confirmation to any '[confirm]' found in the buffer.
-        If a '[yes/no]' statement is received, it will forward the choice passed
-        to it through the `yesno` parameter.
+        automatically sends confirmation to any '[confirm]' found in the
+        buffer. If a '[yes/no]' statement is received, it will forward the
+        choice passed to it through the `yesno` parameter.
 
         .. note:: You may also set the `expect` paramter to be `[confirm]` or
                   `[yes/no]`. The method will break out of the loop before
@@ -116,7 +116,7 @@ class ciscoUpgrade:
         self.shell.send(command)
         # create recieve buffer
         receive_buffer = ''
-        while not expect in receive_buffer:
+        while expect not in receive_buffer:
             if self.shell.recv_ready():
                 buf = self.shell.recv(100)
                 if self.debug and len(buf) > 0:
@@ -174,7 +174,7 @@ class ciscoUpgrade:
                 '?')
             # destination host filename [iosversion]?
             output = self._sendreceive('\r', '#', verbose=True)
-            if not 'Error' in output:
+            if 'Error' not in output:
                 successful = self.verifyimage()
             else:
                 attempts += 1
@@ -247,7 +247,7 @@ class ciscoUpgrade:
         Fetch a startup-config from the remote TFTP server and save it over the
         existing one on the device
 
-        :param filename: Remote file to copy. Include the directory if necessary
+        :param filename: Remote file name. Include the directory if necessary
         '''
         self._sendreceive(
             'copy tftp://' +
@@ -300,7 +300,8 @@ class c38xxUpgrade(ciscoUpgrade):
         # For whatever asinine reason, Cisco requires a complete reload of the
         # system if it is operating in BUNDLE mode so you can use the `software
         # install` command. This is unacceptable.
-        # self._sendreceive('software install file flash:' + self.bin +" "+ iOS_TimingFlag + '\r','#')
+        # self._sendreceive('software install file flash:' + self.bin + " " +
+        #                   iOS_TimingFlag + '\r','#')
         # SO SCREW IT. I'LL DO IT MY WAY.
         # UNPACK THE FILE. SET THE BOOTVAR. SAVE THE RUNNING CONFIG. HAVE THE
         # tftp_getstartup METHOD OVERWRITE THE STARTUP CONFIG. THEN REBOOT.
@@ -310,7 +311,7 @@ class c38xxUpgrade(ciscoUpgrade):
             ' to flash:\r',
             '#',
             verbose=True)
-        if 'error' in status and not 'already installed' in status:
+        if 'error' in status and 'already installed' not in status:
             raise Exception('Unable to expand image for installation!')
         self._sendreceive('config t\r', '#')
         self._sendreceive('boot system flash:packages.conf\r', '#')
@@ -382,10 +383,11 @@ class c45xxUpgrade(ciscoUpgrade):
 class ciscoInsecureUpgrade:
     r'''
     This class mirrors the :py:class:ciscoUpgrade class, however the
-    `pexpect` module is used instead of `paramiko`. Note that the `_sendreceive`
-    method is not added since `pexpect` has one built-in.
+    `pexpect` module is used instead of `paramiko`. Note that the
+    `_sendreceive` method is not added since `pexpect` has one built-in.
 
-    All child classes reflect the same changes as their respective doppelganger.
+    All child classes reflect the same changes as their respective
+    doppelganger.
 
     :param host: Network address for the target device
     :param tftpserver: Network address for the remote TFTP server
@@ -399,8 +401,8 @@ class ciscoInsecureUpgrade:
                             mode, if any
     :param debug: Flag for verbosity
     '''
-    # REMEMBER: pexpect use regex to search the buffer! Escape special characters
-    #           when passing strings to `expect()`
+    # REMEMBER: pexpect use regex to search the buffer! Escape special
+    #           characters when passing strings to `expect()`
 
     def __init__(self, host, tftpserver, binary_file, timeout,
                  logfilename, pver3, username='default', password='l4y3r2',
@@ -444,7 +446,10 @@ class ciscoInsecureUpgrade:
         self.shell.expect('#')
 
     def tftp_getimage(self):
-        '''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
+        '''
+        Fetch image via TFTP. Allow no more than 5 failed attempts before
+        moving on.
+        '''
         successful = False
         attempts = 0
         while not successful and attempts < 5:
@@ -464,7 +469,7 @@ class ciscoInsecureUpgrade:
                 elif i == 2:
                     break
             # self.sendline('')
-            if not 'Error' in self.shell.before:
+            if 'Error' not in self.shell.before:
                 successful = self.verifyimage()
             else:
                 attempts += 1
@@ -472,7 +477,10 @@ class ciscoInsecureUpgrade:
             raise Exception('Too many failed TFTP attempts')
 
     def verifyimage(self):
-        '''Check image for errors. Allow caller function to dictate number of attempts'''
+        '''
+        Check image for errors. Allow caller function to dictate number of
+        attempts
+        '''
         self.shell.sendline('verify flash:' + self.bin)
         self.shell.expect('#')
         if 'Error' in self.shell.before:
@@ -546,7 +554,10 @@ class ciu3850(ciscoInsecureUpgrade):
 class ciu4500(ciscoInsecureUpgrade):
 
     def tftp_getimage(self):
-        '''Fetch image via TFTP. Allow no more than 5 failed attempts before moving on.'''
+        '''
+        Fetch image via TFTP. Allow no more than 5 failed attempts before
+        moving on.
+        '''
         successful = False
         attempts = 0
         while not successful and attempts < 5:
@@ -566,7 +577,7 @@ class ciu4500(ciscoInsecureUpgrade):
                 elif i == 2:
                     break
             # self.sendline('')
-            if not 'Error' in self.shell.before:
+            if 'Error' not in self.shell.before:
                 successful = True
             else:
                 attempts += 1
@@ -588,7 +599,10 @@ class ciu4500(ciscoInsecureUpgrade):
         self.writemem(True)
 
     def verifyimage(self):
-        '''Check image for errors. Allow caller function to dictate number of attempts'''
+        '''
+        Check image for errors. Allow caller function to dictate number
+        of attempts
+        '''
         self.shell.sendline('verify bootflash:' + self.bin)
         self.shell.expect('#')
         if 'Error' in self.shell.before:
