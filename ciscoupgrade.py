@@ -521,10 +521,12 @@ class ciscoInsecureUpgrade:
 class ciu3850(ciscoInsecureUpgrade):
 
     def softwareinstall(self):
-        # Rimed results:
+        # Timed results:
         #  * 60 seconds to expand binary bundle
         #  * 75 seconds to copy package files
         #  * 10 seconds from 'package files copied' alert to being finished
+        # TODO: Use `software install` instead of `software expand` and manual
+        #       specification of boot image
         self.shell.sendline(
             'software expand file flash:' +
             self.bin +
@@ -534,7 +536,7 @@ class ciu3850(ciscoInsecureUpgrade):
         self.shell.expect('#', timeout=150)
         self.shell.sendline('config t')
         self.shell.expect('\)#')
-        self.shell.sendline('boot system flash:packages.conf')
+        self.shell.sendline('boot system switch all flash:packages.conf')
         self.shell.expect('#')
         self.shell.sendline('config-register 0x2101')
         self.shell.expect('#')
