@@ -3,6 +3,7 @@ from alerts import emailAlert
 from easysnmp import snmp_walk, snmp_get, EasySNMPTimeoutError
 from socket import gethostbyaddr  # , gethostbyname
 import logging
+import logging.handlers
 from time import sleep
 from datetime import datetime as dt
 import pexpect
@@ -194,11 +195,14 @@ class CiscoAutoProvision:
         formatter = logging.Formatter(
             '%(asctime)s %(name)-4s| %(levelname)-8s | %(message)s',
             datefmt='%m-%d %H:%M:%S')
-        fh = logging.FileHandler(
+        # fh = logging.FileHandler(
+        fh = logging.handlers.TimedRotatingFileHandler(
             os.path.join(
                 os.path.abspath(
                     self.output_dir),
-                self.logfile))
+                self.logfile),
+            'd',
+            backupCount=7)
         fh.setLevel(self.loglevel)
         fh.setFormatter(formatter)
         self.logger = logging.getLogger('CAP')
