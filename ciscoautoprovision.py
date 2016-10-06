@@ -19,6 +19,8 @@ from tempfile import NamedTemporaryFile
 from multiprocessing import Process, Manager
 import ciscoupgrade as cup
 import sqlite3 as sql
+from voluptuous import Schema, Required, All, Any, Length, Range, Coerce, Email
+from voluptuous import IsDir  # , IsFile, Optional
 
 
 try:    # Python 3 compatibility
@@ -46,11 +48,11 @@ def generate_config(filename='autoProv.confg'):
         'alerts': {
             'type': 'email',
             'endpoint': 'your.gate.com',
-                    'secure': 0,
-                    'port': 25,
-                    'sender': 'no_reply@your.domain.com',
-                    'recipients': ['webmaster@target.domain.com'],
-                    'threshold': 5
+            'secure': 0,
+            'port': 25,
+            'sender': 'no_reply@your.domain.com',
+            'recipients': ['webmaster@target.domain.com'],
+            'threshold': 5
         },
         'target firmware': {
             'C3560': 'c3560-ipbasek9-mz.122-55.SE10.bin',
@@ -246,65 +248,80 @@ class CiscoAutoProvision:
         with open(os.path.join(os.path.abspath('./cfg/'), filename)) as f:
             data = json.load(f)
         try:
-            if int(data['debug']) <= 1 and int(data['debug']) >= 0:
-                self.debug = int(data['debug'])
-            else:
-                self.debug = 0
-                # raise Exception('\'debug\' is not a valid value!')
-            if 'debug print' in data.keys():
-                self.debug_print = int(data['debug print'])
-            else:
-                self.debug_print = 0
-            if isinstance(data['target firmware'], dict):
-                self.firmwares = data['target firmware']
-            else:
-                raise Exception('target firmware is not a valid dictionary')
-            if 'log file' in data.keys():
-                self.logfile = data['log file']
-            else:
-                self.logfile = 'autoprov.log'
-            if data['database']:
-                self.database = data['database']
-            if data['default rwcommunity']:
-                self.community = data['default rwcommunity']
-            if data['ignore list']:
-                self.ignore = data['ignore list']
-            if data['output dir']:
-                self.output_dir = data['output dir']
-            if data['production rwcommunity']:
-                self.prodcommunity = data['production rwcommunity']
-            if data['switch username']:
-                self.suser = data['switch username']
-            if data['switch password']:
-                self.spasswd = data['switch password']
-            if data['switch enable']:
-                self.senable = data['switch enable']
-            if data['tftp server']:
-                self.tftp = data['tftp server']
-            if 'alerts' in data.keys():
-                self.alerts = {}
-                self.alerts['type'] = data['alerts']['type']
-                self.alerts['endpoint'] = data['alerts']['endpoint']
-                self.alerts['sender'] = data['alerts']['sender']
-                self.alerts['recipients'] = data['alerts']['recipients']
-                self.alerts['threshold'] = data['alerts']['threshold']
-                self.alerts['secure'] = data['alerts']['secure']
-            if 'username' in data.keys():
-                self.alerts['username'] = data['alerts']['username']
-                self.alerts['password'] = data['alerts']['password']
-            self._rsa_pass_size = 32 if not (
-                'rsa pass size' in data.keys()) else data[
-                'rsa pass size']
-            if int(data['telnet timeout']) < 5:
-                data['telnet timeout'] = 30
-                # raise Exception('telnet timeout must be greater than 30
-                # seconds')
-            else:
-                self.telnettimeout = int(data['telnet timeout'])
+            def checkemail(emails):
+                emailschema = Schema(Email())
+                if isinstance(emails, list):
+                    return [e for e in emails if emailschema(e)]
+                else:
+                    return [emailschema(e)]
+
+            def checkalerts(alerts):
+                alertschema = Schema({
+                    Required('type'): All(str, Length(min=1)),
+                    Required('endpoint'): All(str, Length(min=1)),
+                    Required('sender'): All(Email(), Length(min=1)),
+                    Required('recipients'): All(checkemail, Length(min=1)),
+                    Required('threshold'): All(Coerce(int), Length(min=1)),
+                    Required('secure'): Any(int, bool),
+                    Required('port', default=25): All(Coerce(int),
+                                                      Range(min=1, max=65535)),
+                    'username': str,
+                    'password': str
+                })
+                return alertschema(alerts)
+
+            configschema = Schema({
+                Required('debug', default=0): All(Coerce(int),
+                                                  Range(min=0, max=1)),
+                Required('debug_print', default=0): All(Coerce(int),
+                                                        Range(min=0, max=1)),
+                # IsDir() won't check the base directory,
+                # IsFile() will return an error if the file doesn't exist.
+                # We want to create the file if it doesn't exist, so...
+                # https://github.com/alecthomas/voluptuous/issues/229
+                Required('log file', default='autoprov.log'): str,
+                Required('target firmware'): dict,
+                Required('database'): IsDir(),
+                Required('default rwcommunity'): str,
+                Required('ignore list', default='ignore.txt'): str,
+                Required('output dir', default='./output/'): All(str, IsDir()),
+                Required('production rwcommunity'): str,
+                Required('switch username'): str,
+                Required('switch password'): str,
+                Required('switch enable'): str,
+                Required('tftp server'): str,
+                Required('alerts'): All(dict, checkalerts),
+                Required('rsa pass size', default=32): All(
+                    Coerce(int),
+                    Range(min=8, max=255)),
+                Required('telnet timeout', default=30): All(
+                    Coerce(int),
+                    Range(min=5, max=300))
+            })
+            config = configschema(data)
+            self.debug = config['debug']
+            self.debug_print = config['debug print']
+            self.firmwares = config['target firmware']
+            self.logfile = config['log file']
+            self.logfile = 'autoprov.log'
+            self.database = config['database']
+            self.community = config['default rwcommunity']
+            self.ignore = config['ignore list']
+            self.output_dir = config['output dir']
+            self.prodcommunity = config['production rwcommunity']
+            self.suser = config['switch username']
+            self.spasswd = config['switch password']
+            self.senable = config['switch enable']
+            self.tftp = config['tftp server']
+            self.alerts = config['alerts']
+            self.alerts['username'] = config['alerts']['username']
+            self.alerts['password'] = config['alerts']['password']
+            self._rsa_pass_size = config['rsa pass size']
+            self.telnettimeout = config['telnet timeout']
         except Exception as e:
             sys.exit(
-                "An error occurred while parsing the config file: " +
-                str(e))
+                'An error occurred while parsing the config file: {}'.format(e)
+            )
 
     def search(self, target='http://localhost',
                index='autoprovisioning', time_mins=5, port=9200):
