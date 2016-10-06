@@ -195,13 +195,21 @@ class CiscoAutoProvision:
         formatter = logging.Formatter(
             '%(asctime)s %(name)-4s| %(levelname)-8s | %(message)s',
             datefmt='%m-%d %H:%M:%S')
-        # fh = logging.FileHandler(
-        fh = logging.handlers.TimedRotatingFileHandler(
+        # TimedRotatingFileHandler won't work if invoking script via Cron
+        # http://stackoverflow.com/q/3496727/1993468
+        # fh = logging.handlers.TimedRotatingFileHandler(
+        #     os.path.join(
+        #         os.path.abspath(
+        #             self.output_dir),
+        #         self.logfile),
+        #     'd',
+        #     backupCount=7)
+        fh = logging.handlers.RotatingFileHandler(
             os.path.join(
                 os.path.abspath(
                     self.output_dir),
                 self.logfile),
-            'd',
+            maxBytes=256000,
             backupCount=7)
         fh.setLevel(self.loglevel)
         fh.setFormatter(formatter)
