@@ -5,7 +5,9 @@ Collection of handlers for sending alerts through various means
 
 .. moduleauthor:: Kent Coble
 """
-
+import string
+import logging
+import logging.handlers
 import smtplib
 from email.mime.text import MIMEText
 from multiprocessing import Manager
@@ -158,3 +160,41 @@ class emailAlert(alert):
             return self.err.get()
         else:
             return None
+
+# http://stackoverflow.com/q/1610845/1993468
+
+
+class BufferingSMTPHandler(logging.handlers.BufferingHandler):
+
+    def __init__(self, mailhost, fromaddr, toaddrs, subject, capacity,
+                 form="%(asctime)s %(levelname)-5s %(message)s"):
+        r'''An alternative implementation of SMTPHandler.'''
+
+        logging.handlers.BufferingHandler.__init__(self, capacity)
+        self.mailhost = mailhost
+        self.mailport = None
+        self.fromaddr = fromaddr
+        self.toaddrs = toaddrs
+        self.subject = subject
+        self.setFormatter(logging.Formatter(form))
+
+    def flush(self):
+        if len(self.buffer) > 0:
+            try:
+                import smtplib
+                port = self.mailport
+                if not port:
+                    port = smtplib.SMTP_PORT
+                smtp = smtplib.SMTP(self.mailhost, port)
+                msg = "From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n" % (
+                    self.fromaddr,
+                    string.join(self.toaddrs, ","), self.subject)
+                for record in self.buffer:
+                    s = self.format(record)
+                    print s
+                    msg = msg + s + "\r\n"
+                smtp.sendmail(self.fromaddr, self.toaddrs, msg)
+                smtp.quit()
+            except:
+                self.handleError(None)  # no particular record
+            self.buffer = []

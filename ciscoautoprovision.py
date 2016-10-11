@@ -18,6 +18,7 @@ import tftpy
 from tempfile import NamedTemporaryFile
 from multiprocessing import Process, Manager
 import ciscoupgrade as cup
+from recordclass import recordclass
 import sqlite3 as sql
 from voluptuous import Schema, Required, All, Any, Length, Range, Coerce, Email
 from voluptuous import IsDir  # , IsFile, Optional
@@ -255,26 +256,15 @@ class CiscoAutoProvision:
                 else:
                     return [emailschema(e)]
 
-            def checkalerts(alerts):
-                alertschema = Schema({
-                    Required('type'): All(str, Length(min=1)),
-                    Required('endpoint'): All(str, Length(min=1)),
-                    Required('sender'): All(Email(), Length(min=1)),
-                    Required('recipients'): All(checkemail, Length(min=1)),
-                    Required('threshold'): All(Coerce(int), Length(min=1)),
-                    Required('secure'): Any(int, bool),
-                    Required('port', default=25): All(Coerce(int),
-                                                      Range(min=1, max=65535)),
-                    'username': str,
-                    'password': str
-                })
-                return alertschema(alerts)
-
             configschema = Schema({
                 Required('debug', default=0): All(Coerce(int),
                                                   Range(min=0, max=1)),
                 Required('debug_print', default=0): All(Coerce(int),
                                                         Range(min=0, max=1)),
+                Required('elk'): All(dict, Schema({
+                    Required('address'): dict,
+                    Required('index'): All(str, Length(min=1))
+                })),
                 # IsDir() won't check the base directory,
                 # IsFile() will return an error if the file doesn't exist.
                 # We want to create the file if it doesn't exist, so...
@@ -290,7 +280,18 @@ class CiscoAutoProvision:
                 Required('switch password'): str,
                 Required('switch enable'): str,
                 Required('tftp server'): str,
-                Required('alerts'): All(dict, checkalerts),
+                Required('alerts'): All(dict, Schema({
+                    Required('type'): All(str, Length(min=1)),
+                    Required('endpoint'): All(str, Length(min=1)),
+                    Required('sender'): All(Email(), Length(min=1)),
+                    Required('recipients'): All(checkemail, Length(min=1)),
+                    Required('threshold'): All(Coerce(int), Length(min=1)),
+                    Required('secure'): Any(int, bool),
+                    Required('port', default=25): All(Coerce(int),
+                                                      Range(min=1, max=65535)),
+                    'username': str,
+                    'password': str
+                })),
                 Required('rsa pass size', default=32): All(
                     Coerce(int),
                     Range(min=8, max=255)),
@@ -301,6 +302,8 @@ class CiscoAutoProvision:
             config = configschema(data)
             self.debug = config['debug']
             self.debug_print = config['debug print']
+            self.elk = recordclass('elk_stack', ['address', 'index'])(
+                config['elk']['address'], config['elk']['index'])
             self.firmwares = config['target firmware']
             self.logfile = config['log file']
             self.logfile = 'autoprov.log'
@@ -324,7 +327,7 @@ class CiscoAutoProvision:
             )
 
     def search(self, target='http://localhost',
-               index='autoprovisioning', time_mins=5, port=9200):
+               index='autoprovision', time_mins=5, port=9200):
         r'''
         Search and parse logs from an ElasticSearch server.
 
@@ -461,7 +464,7 @@ class CiscoAutoProvision:
         * Finally, :py:meth:`sendalerts` is called to message the target
           audience, if any.
         '''
-        self.search()
+        self.search(self.elk.address, self.elk.index)
         if not self.switches:
             self.logger.info('No switches require provisioning.')
             return
