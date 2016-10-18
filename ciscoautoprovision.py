@@ -43,7 +43,7 @@ def generate_config(filename='autoProv.confg'):
     r'''
     Generate an example configuration file
 
-    :param filename: The target file to write to in the 'cfg' folder
+    :param String filename: The target file to write to in the 'cfg' folder
     '''
     d = {
         'alerts': {
@@ -219,6 +219,12 @@ class CiscoAutoProvision:
         self.logger = logging.getLogger('CAP')
         self.logger.setLevel(self.loglevel)
         self.logger.addHandler(fh)
+        tf = NamedTemporaryFile(prefix='autoprovlog')
+        tfh = logging.FileHandler(tf.name)
+        tfh.setLevel(logging.INFO)
+        tfh.setFormatter(formatter)
+        self.logger.addHandler(tfh)
+        self.logs4email = [tfh.name]
         if self.debug_print:
             cformatter = logging.Formatter(
                 '%(name)-4s| %(levelname)-8s | %(message)s')
@@ -257,53 +263,60 @@ class CiscoAutoProvision:
                     return [emailschema(e)]
 
             configschema = Schema({
-                Required('debug', default=0): All(Coerce(int),
-                                                  Range(min=0, max=1)),
-                Required('debug_print', default=0): All(Coerce(int),
-                                                        Range(min=0, max=1)),
-                Required('elk'): All(dict, Schema({
-                    Required('address'): dict,
-                    Required('index'): All(str, Length(min=1))
-                })),
-                # IsDir() won't check the base directory,
-                # IsFile() will return an error if the file doesn't exist.
-                # We want to create the file if it doesn't exist, so...
-                # https://github.com/alecthomas/voluptuous/issues/229
-                Required('log file', default='autoprov.log'): str,
-                Required('target firmware'): dict,
-                Required('database'): IsDir(),
-                Required('default rwcommunity'): str,
-                Required('ignore list', default='ignore.txt'): str,
-                Required('output dir', default='./output/'): All(str, IsDir()),
-                Required('production rwcommunity'): str,
-                Required('switch username'): str,
-                Required('switch password'): str,
-                Required('switch enable'): str,
-                Required('tftp server'): str,
                 Required('alerts'): All(dict, Schema({
-                    Required('type'): All(str, Length(min=1)),
-                    Required('endpoint'): All(str, Length(min=1)),
-                    Required('sender'): All(Email(), Length(min=1)),
+                    Required('endpoint'): All(Coerce(str), Length(min=1)),
                     Required('recipients'): All(checkemail, Length(min=1)),
-                    Required('threshold'): All(Coerce(int), Length(min=1)),
                     Required('secure'): Any(int, bool),
+                    Required('sender'): All(Email(), Length(min=1)),
+                    Required('threshold'): All(Coerce(int), Range(min=1)),
+                    Required('type'): All(Coerce(str), Length(min=1)),
                     Required('port', default=25): All(Coerce(int),
                                                       Range(min=1, max=65535)),
                     'username': str,
                     'password': str
                 })),
+                Required('database'): IsDir(),
+                Required('debug', default=0): All(Coerce(int),
+                                                  Range(min=0, max=1)),
+                Required('debug print', default=0): All(Coerce(int),
+                                                        Range(min=0, max=1)),
+                Required('default rwcommunity'): Coerce(str),
+                'elk': All(dict, Schema({
+                    'extra': list,
+                    'index': All(Coerce(str), Length(min=1)),
+                    'port': All(int, Range(min=1, max=65535)),
+                    'target': Coerce(str),
+                    'timeperiod': All(Coerce(int), Range(min=1)),
+                })),
+                Required('ignore list', default='ignore.txt'): Coerce(str),
+                # IsDir() won't check the base directory,
+                # IsFile() will return an error if the file doesn't exist.
+                # We want to create the file if it doesn't exist, so...
+                # https://github.com/alecthomas/voluptuous/issues/229
+                Required('log file', default='autoprov.log'): Coerce(str),
+                Required('output dir', default='./output/'): All(Coerce(str),
+                                                                 IsDir()),
+                Required('production rwcommunity'): Coerce(str),
                 Required('rsa pass size', default=32): All(
                     Coerce(int),
                     Range(min=8, max=255)),
+                Required('switch enable'): Coerce(str),
+                Required('switch password'): Coerce(str),
+                Required('switch username'): Coerce(str),
+                Required('target firmware'): dict,
                 Required('telnet timeout', default=30): All(
                     Coerce(int),
-                    Range(min=5, max=300))
+                    Range(min=5, max=300)),
+                Required('tftp server'): Coerce(str)
             })
             config = configschema(data)
             self.debug = config['debug']
             self.debug_print = config['debug print']
-            self.elk = recordclass('elk_stack', ['address', 'index'])(
-                config['elk']['address'], config['elk']['index'])
+            # Just pass the keys we have. No need to define every field
+            self.elk = recordclass(
+                'elk_stack',
+                config['elk'].keys())(
+                **config['elk'])
             self.firmwares = config['target firmware']
             self.logfile = config['log file']
             self.logfile = 'autoprov.log'
@@ -317,17 +330,20 @@ class CiscoAutoProvision:
             self.senable = config['switch enable']
             self.tftp = config['tftp server']
             self.alerts = config['alerts']
-            self.alerts['username'] = config['alerts']['username']
-            self.alerts['password'] = config['alerts']['password']
+            self.alerts['username'] = None if 'username' not in config[
+                'alerts'] else config['alerts']['username']
+            self.alerts['password'] = None if 'password' not in config[
+                'alerts'] else config['alerts']['password']
             self._rsa_pass_size = config['rsa pass size']
             self.telnettimeout = config['telnet timeout']
+        # except Exception as e:
         except Exception as e:
             sys.exit(
                 'An error occurred while parsing the config file: {}'.format(e)
             )
 
     def search(self, target='http://localhost',
-               index='autoprovision', time_mins=5, port=9200):
+               index='autoprovision', timeperiod=5, port=9200, extra=[]):
         r'''
         Search and parse logs from an ElasticSearch server.
 
@@ -339,8 +355,8 @@ class CiscoAutoProvision:
         other than 1. It is heavily inferred that CDP must also be enabled on
         the neighboring equipment.
 
-        :param target: ElasticSearch server base address
-        :param index: The index used for filing logs/docs pertaining to
+        :param String target: ElasticSearch server base address
+        :param String index: The index used for filing logs/docs pertaining to
                       auto-provisioning equipment
         '''
         self.switches = []
@@ -366,7 +382,7 @@ class CiscoAutoProvision:
                     'must': [{
                         'range': {
                             '@timestamp': {
-                                'gte': 'now-' + str(time_mins) + 'm',
+                                'gte': 'now-' + str(timeperiod) + 'm',
                                 'lte': 'now'
                             }
                         }
@@ -375,7 +391,7 @@ class CiscoAutoProvision:
             },
             'size': 10000
         }
-
+        query['filter']['bool']['must'].extend(extra)
         r = requests.get(url=url, data=json.dumps(query))
         r.raise_for_status()
         result_dict = r.json()
@@ -464,7 +480,7 @@ class CiscoAutoProvision:
         * Finally, :py:meth:`sendalerts` is called to message the target
           audience, if any.
         '''
-        self.search(self.elk.address, self.elk.index)
+        self.search(self.elk.target, self.elk.index)
         if not self.switches:
             self.logger.info('No switches require provisioning.')
             return
@@ -603,7 +619,7 @@ class CiscoAutoProvision:
         r'''
         Retrieve the target's serial number and firmware number
 
-        :param switch: Dictionary representing all known data on the target
+        :param Dict switch: All known data on the target
         '''
         # Boot image: SNMPv2-SMI::enterprises.9.2.1.73.0
         # https://supportforums.cisco.com/discussion/9696971/which-oid-used-get-name-cisco-device-boot-image
@@ -717,8 +733,8 @@ class CiscoAutoProvision:
         :py:meth:`autoupgrade` but uses Pexpect in order to perform the upgrade
         over Telnet instead.
 
-        :param switch: Dictionary representing the target device
-        :param logfilename: File to flush Telnet buffer to
+        :param Dict switch: All known information of the target device
+        :param String logfilename: File to flush Telnet buffer to
         '''
         self.logger.debug('[%s] Attempting to upgrade to K9 binary first',
                           switch['ip address'])
@@ -793,7 +809,7 @@ class CiscoAutoProvision:
         r'''
         Derive the target's expected hostname from a CDP neighbor's port
 
-        :param switch: Dictionary representing the target device
+        :param Dict switch: All known data of the target device
         '''
         # logger = logging.getLogger('CAP.(' + switch['ip address'] + ')')
         oid_index = []
@@ -829,7 +845,7 @@ class CiscoAutoProvision:
         r'''
         Retrieve target's serial number via SNMP
 
-        :param switch: Dictionary representing the target device
+        :param Dict switch: All known data of the target device
         '''
         # logger = logging.getLogger('CAP.(' + switch['ip address'] + ')')
         serialnum = self.getoids[switch['model']](
@@ -845,7 +861,7 @@ class CiscoAutoProvision:
 
         Creates an instance of the upgrade class based on device's model
 
-        :param switch: Dictionary representing the target device
+        :param Dict switch: All known data of the target device
         '''
         d = dict(host=switch['ip address'], tftpserver=self.tftp,
                  binary_file=switch['bin'],
@@ -868,7 +884,7 @@ class CiscoAutoProvision:
         r'''
         Run all TFTP commands and set the bootimage
 
-        :param switch: Dictionary representing the target device
+        :param Dict switch: All known data of the target device
         '''
         self.logger.info(
             '[%s] Preparing upgrade process...',
@@ -888,8 +904,8 @@ class CiscoAutoProvision:
         Transfer the device's production-level configuration file and save it
         over the startup-config
 
-        :param switch: Dictionary representing the target device
-        :param time: Timeout period, in seconds, before giving up
+        :param Dict switch: All known data of the target device
+        :param Int time: Timeout period, in seconds, before giving up
         '''
         if 'new ip address' in switch.keys():
             switch['session'].tftp_replaceconf(timeout=time)
@@ -907,7 +923,7 @@ class CiscoAutoProvision:
         Search for and retrieve the production-level configuration file for the
         target device
 
-        :param switch: Dictionary representing the target device
+        :param Dict switch: All known data of the target device
         '''
         switch['session'].blastvlan()
         found_config = False
@@ -937,7 +953,7 @@ class CiscoAutoProvision:
                     switch['ip address'], filename)
         if not found_config:
             self.logger.warning(
-                ('Unable to find target config file. Resorting to model '
+                ('[%s] Unable to find target config file. Resorting to model '
                  'default!'), switch['ip address'])
             dir_prefix = '/autoprov'
             filename = '/cap' + switch['model'].lower() + '-confg'
@@ -956,8 +972,8 @@ class CiscoAutoProvision:
         This method will parse the file to determine the host's expected IP
         address once it loads it as the startup-config
 
-        :param switch: Dictionary representing the target device
-        :param remotefilename: Target file to fetch
+        :param Dict switch: All known data of the target device
+        :param String remotefilename: Target file to fetch
         '''
         outputfile = NamedTemporaryFile()
         success = Helper(
@@ -1005,8 +1021,8 @@ class CiscoAutoProvision:
                   either 2048 or 4096. Take this into consideration when
                   waiting for provisioning to complete.
 
-        :param switch: Dictionary representing the target device
-        :param logfilename: File to flush the Telnet session buffer to
+        :param Dict switch: All known data of the target device
+        :param String remotefilename: Target file to fetch
         '''
         self.logger.debug(
             '[%s] Attempting to setup RSA keys',
@@ -1133,8 +1149,8 @@ class CiscoAutoProvision:
         Any devices that have passed the threshold of allowed provisioning will
         be ignored.
 
-        :param switch: Dictionary representing data on the target device. This
-                       **must** contain the hostname, IP, model, and serial no.
+        :param Dict switch: All known data on the target device. This **must**
+                            contain the hostname, IP, model, and serial no.
         '''
         while True:
             try:
@@ -1219,8 +1235,8 @@ class CiscoAutoProvision:
         | TEXT | TEXT | TEXT  | PRIMARY KEY | TEXT | INTEGER  | INTEGER |
         +------+------+-------+-------------+------+----------+---------+
 
-        :param switch: Dictionary representing data on the target device. This
-                       **must** contain the hostname, IP, model, and serial no.
+        :param Dict switch: All known data on the target device. This **must**
+                            contain the hostname, IP, model, and serial no.
         :returns: True if this process is the owner of the lock
         '''
         # If the switch wasn't locked by *this* process, ignore it
@@ -1398,7 +1414,8 @@ class CiscoAutoProvision:
                 self.alerts['recipients'],
                 message,
                 self.alerts['sender'],
-                subject='Provisioning Activity')
+                subject='Provisioning Activity',
+                attachments=self.logs4email)
             self.logger.info('An email has been sent.')
         if not message:
             self.logger.debug('No email was sent.')

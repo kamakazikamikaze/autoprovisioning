@@ -5,11 +5,12 @@ Collection of handlers for sending alerts through various means
 
 .. moduleauthor:: Kent Coble
 """
-import string
-import logging
-import logging.handlers
 import smtplib
+from os.path import basename
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import COMMASPACE, formatdate
 from multiprocessing import Manager
 
 
@@ -47,6 +48,7 @@ class alert(object):
     login = auth
 
 
+# http://stackoverflow.com/q/3362600/1993468
 class emailAlert(alert):
     r'''
     Use email to alert the target audience
@@ -105,18 +107,19 @@ class emailAlert(alert):
         self.mailserv.login(self.username, self.password)
         return
 
-    def send(self, recipients, msg, sender, subject='Alert'):
+    def send(self, recipients, msg, sender, subject='Alert', attachments=None):
         r'''
         Send an email to the mail server for delivery
 
         Handles SSL/TLS and authentication challenges, if any. If an error
         occurs, it is passed to the :py:attr:`error` queue
 
-        :param list recipients: Target audience for the email. Multiple
+        :param List recipients: Target audience for the email. Multiple
                                 recipients may be set
-        :param msg: Message to send. Plaintext only
-        :param sender: Email of the sender
-        :param subject: Messages subject to use
+        :param String msg: Message to send. Plaintext only
+        :param String sender: Email of the sender
+        :param String subject: Messages subject to use
+        :param List attachments: Files to include
         '''
         if not isinstance(recipients, list):
             recipients = [recipients]
@@ -129,11 +132,22 @@ class emailAlert(alert):
                     self.mailserv.starttls(self.keyfile, self.certfile)
                 if self.username is not None:
                     self._auth()
-                # mail = emailAlert.format(recipient, msg, sender, subject)
-                mail = MIMEText(msg)
+                # mail = MIMEText(msg)
+                mail = MIMEMultipart()
                 mail['Subject'] = subject
                 mail['From'] = sender
-                mail['To'] = ', '.join(recipients)
+                mail['To'] = COMMASPACE.join(recipients)
+                mail['Date'] = format(localtime=True)
+                mail.attach(MIMEText(msg))
+                for f in attachments or []:
+                    with open(f, 'rb') as fil:
+                        part = MIMEApplication(
+                            fil.read(),
+                            Name=basename(f)
+                        )
+                        part['Content-Disposition'] = (
+                            'attachment; filename="{}"'.format(basename(f)))
+                        msg.attach(part)
                 self.mailserv.sendmail(sender, recipients, mail.as_string())
                 self.mailserv.quit()
                 return True
@@ -160,41 +174,3 @@ class emailAlert(alert):
             return self.err.get()
         else:
             return None
-
-# http://stackoverflow.com/q/1610845/1993468
-
-
-class BufferingSMTPHandler(logging.handlers.BufferingHandler):
-
-    def __init__(self, mailhost, fromaddr, toaddrs, subject, capacity,
-                 form="%(asctime)s %(levelname)-5s %(message)s"):
-        r'''An alternative implementation of SMTPHandler.'''
-
-        logging.handlers.BufferingHandler.__init__(self, capacity)
-        self.mailhost = mailhost
-        self.mailport = None
-        self.fromaddr = fromaddr
-        self.toaddrs = toaddrs
-        self.subject = subject
-        self.setFormatter(logging.Formatter(form))
-
-    def flush(self):
-        if len(self.buffer) > 0:
-            try:
-                import smtplib
-                port = self.mailport
-                if not port:
-                    port = smtplib.SMTP_PORT
-                smtp = smtplib.SMTP(self.mailhost, port)
-                msg = "From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n" % (
-                    self.fromaddr,
-                    string.join(self.toaddrs, ","), self.subject)
-                for record in self.buffer:
-                    s = self.format(record)
-                    print s
-                    msg = msg + s + "\r\n"
-                smtp.sendmail(self.fromaddr, self.toaddrs, msg)
-                smtp.quit()
-            except:
-                self.handleError(None)  # no particular record
-            self.buffer = []
