@@ -71,8 +71,8 @@ class emailAlert(alert):
     '''
 
     def __init__(self, endpoint='localhost', username=None, password=None,
-                 port=None, secure=True, keyfile=None, certfile=None,
-                 timeout=3):
+                 port=0, secure=True, keyfile=None, certfile=None,
+                 timeout=3, debug=False):
         super(emailAlert, self).__init__(endpoint, username, password, port)
         self.secure = secure
         self.keyfile = keyfile
@@ -80,6 +80,7 @@ class emailAlert(alert):
         self.timeout = timeout
         self.port = port
         self.mailserv = None
+        self.debug = debug
         self.err = Manager().Queue()
 
     def auth(self):
@@ -127,7 +128,7 @@ class emailAlert(alert):
             try:
                 self.mailserv = smtplib.SMTP(
                     self.endpoint, self.port, timeout=self.timeout)
-                self.mailserv.set_debuglevel(1)
+                self.mailserv.set_debuglevel(self.debug)
                 if self.secure:
                     self.mailserv.starttls(self.keyfile, self.certfile)
                 if self.username is not None:
@@ -137,17 +138,21 @@ class emailAlert(alert):
                 mail['Subject'] = subject
                 mail['From'] = sender
                 mail['To'] = COMMASPACE.join(recipients)
-                mail['Date'] = format(localtime=True)
+                mail['Date'] = formatdate(localtime=True)
                 mail.attach(MIMEText(msg))
                 for f in attachments or []:
-                    with open(f, 'rb') as fil:
-                        part = MIMEApplication(
-                            fil.read(),
-                            Name=basename(f)
-                        )
-                        part['Content-Disposition'] = (
-                            'attachment; filename="{}"'.format(basename(f)))
-                        msg.attach(part)
+                    try:
+                        with open(f, 'rb') as fil:
+                            part = MIMEApplication(
+                                fil.read(),
+                                Name=basename(f)
+                            )
+                            part['Content-Disposition'] = (
+                                'attachment; filename="{}"'.format(basename(f))
+                            )
+                            mail.attach(part)
+                    except Exception as e:
+                        self.err.put(e)
                 self.mailserv.sendmail(sender, recipients, mail.as_string())
                 self.mailserv.quit()
                 return True

@@ -18,7 +18,7 @@ import tftpy
 from tempfile import NamedTemporaryFile
 from multiprocessing import Process, Manager
 import ciscoupgrade as cup
-from recordclass import recordclass
+# from recordclass import recordclass
 import sqlite3 as sql
 from voluptuous import Schema, Required, All, Any, Length, Range, Coerce, Email
 from voluptuous import IsDir  # , IsFile, Optional
@@ -50,7 +50,6 @@ def generate_config(filename='autoProv.confg'):
             'type': 'email',
             'endpoint': 'your.gate.com',
             'secure': 0,
-            'port': 25,
             'sender': 'no_reply@your.domain.com',
             'recipients': ['webmaster@target.domain.com'],
             'threshold': 5
@@ -72,6 +71,11 @@ def generate_config(filename='autoProv.confg'):
         'database': '/srv/autoprovision',
         'debug': '1',
         'debug print': '0',
+        'elk': {
+            'target': 'http://es-url.com',
+            'index': 'autoprovision',
+            'extra': []
+        },
         'ignore list': 'ignore.txt',
         'log file': 'autoprov.log',
         'output dir': './output/',
@@ -224,7 +228,7 @@ class CiscoAutoProvision:
         tfh.setLevel(logging.INFO)
         tfh.setFormatter(formatter)
         self.logger.addHandler(tfh)
-        self.logs4email = [tfh.name]
+        self.log4email = tf
         if self.debug_print:
             cformatter = logging.Formatter(
                 '%(name)-4s| %(levelname)-8s | %(message)s')
@@ -266,12 +270,16 @@ class CiscoAutoProvision:
                 Required('alerts'): All(dict, Schema({
                     Required('endpoint'): All(Coerce(str), Length(min=1)),
                     Required('recipients'): All(checkemail, Length(min=1)),
-                    Required('secure'): Any(int, bool),
+                    'secure': Any(int, bool),
                     Required('sender'): All(Email(), Length(min=1)),
-                    Required('threshold'): All(Coerce(int), Range(min=1)),
+                    Required('threshold', default=3): All(
+                        Coerce(int),
+                        Range(min=1)),
                     Required('type'): All(Coerce(str), Length(min=1)),
-                    Required('port', default=25): All(Coerce(int),
-                                                      Range(min=1, max=65535)),
+                    # SMTP class defaults to 0 in __init__
+                    'port': All(Coerce(int), Range(min=0, max=65535)),
+                    'timeout': All(Coerce(int), Range(min=-1, max=300)),
+                    'debug': Any(str, int, bool),
                     'username': str,
                     'password': str
                 })),
@@ -313,10 +321,11 @@ class CiscoAutoProvision:
             self.debug = config['debug']
             self.debug_print = config['debug print']
             # Just pass the keys we have. No need to define every field
-            self.elk = recordclass(
-                'elk_stack',
-                config['elk'].keys())(
-                **config['elk'])
+            # self.elk = recordclass(
+            #     'elk_stack',
+            #     config['elk'].keys())(
+            #     **config['elk'])
+            self.elk = config['elk']
             self.firmwares = config['target firmware']
             self.logfile = config['log file']
             self.logfile = 'autoprov.log'
@@ -330,10 +339,10 @@ class CiscoAutoProvision:
             self.senable = config['switch enable']
             self.tftp = config['tftp server']
             self.alerts = config['alerts']
-            self.alerts['username'] = None if 'username' not in config[
-                'alerts'] else config['alerts']['username']
-            self.alerts['password'] = None if 'password' not in config[
-                'alerts'] else config['alerts']['password']
+            # self.alerts['username'] = None if 'username' not in config[
+            #     'alerts'] else config['alerts']['username']
+            # self.alerts['password'] = None if 'password' not in config[
+            #     'alerts'] else config['alerts']['password']
             self._rsa_pass_size = config['rsa pass size']
             self.telnettimeout = config['telnet timeout']
         # except Exception as e:
@@ -480,7 +489,7 @@ class CiscoAutoProvision:
         * Finally, :py:meth:`sendalerts` is called to message the target
           audience, if any.
         '''
-        self.search(self.elk.target, self.elk.index)
+        self.search(**self.elk)
         if not self.switches:
             self.logger.info('No switches require provisioning.')
             return
@@ -1408,15 +1417,32 @@ class CiscoAutoProvision:
         del a['sender'], a['recipients'], a['type'], a['threshold']
         email = emailAlert(**a)
         if message:
-            message += '\n\nThis alert was generated at {0}\n'.format(
-                dt.now().strftime(self.timestr))
-            email.send(
-                self.alerts['recipients'],
-                message,
-                self.alerts['sender'],
-                subject='Provisioning Activity',
-                attachments=self.logs4email)
-            self.logger.info('An email has been sent.')
+            try:
+                if self.log4email:
+                    self.logger.debug('Attaching {} to email as a log.'.format(
+                        self.log4email.name.split('/')[-1]))
+                message += '\n\nThis alert was generated at {0}\n'.format(
+                    dt.now().strftime(self.timestr))
+                success = email.send(
+                    self.alerts['recipients'],
+                    message,
+                    self.alerts['sender'],
+                    subject='Provisioning Activity',
+                    attachments=[self.log4email.name])
+                if success:
+                    self.logger.info('An email has been sent.')
+                else:
+                    self.logger.critical('Error generating email alert!')
+                while True:
+                    e = email.error
+                    if not e:
+                        break
+                    else:
+                        self.logger.error(e)
+            except:
+                self.logger.error(
+                    'An error occurred while trying to generate an email',
+                    exc_info=True)
         if not message:
             self.logger.debug('No email was sent.')
 
