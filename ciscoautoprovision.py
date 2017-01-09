@@ -685,16 +685,18 @@ class CiscoAutoProvision:
             hostname=switch['ip address'],
             community=self.community,
             version=2)
-        if len(physical[0].value) == 0:
-            del physical[0]
+        # if len(physical[0].value) == 0:
+        #     del physical[0]
+        # Remove all indices that do not contain values
+        physical = filter(lambda p: p.value, physical)
         model = str(physical[0].value.split('-')[1])
         self.logger.debug(
             '[%s] IOS image: %s',
             switch['ip address'],
             softimage)
-        if model not in self.firmwares.keys():
+        if model not in self.firmwares:
             raise Exception('model' + model + 'not found in firmware list!')
-            # TODO: make a way to add firmware
+            # TODO: make a way to add firmware if not found in listing
         elif isinstance(softimage, unicode) and softimage in self.firmwares[
                 model].lower() and (
                     self._k9(softimage) and '296' not in model):
