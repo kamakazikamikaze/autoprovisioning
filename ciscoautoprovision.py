@@ -6,6 +6,8 @@ import logging
 import logging.handlers
 from time import sleep
 from datetime import datetime as dt
+# This is ours! Be sure to install it globally or into your virtualenv
+from patheng.utils import load_plugin
 import pexpect
 import requests
 from pprint import pformat
@@ -71,15 +73,15 @@ def generate_config(filename='autoProv.confg'):
         'database': '/srv/autoprovision',
         'debug': '1',
         'debug print': '0',
-        'elk': {
-            'target': 'http://es-url.com',
-            'index': 'autoprovision',
-            'extra': []
-        },
         'ignore list': 'ignore.txt',
         'log file': 'autoprov.log',
         'output dir': './output/',
         'default rwcommunity': 'private',
+        'search': {
+            'target': 'http://es-url.com',
+            'index': 'autoprovision',
+            'extra': []
+        },
         'switch username': 'default',
         'switch password': 'l4y3r2',
         'switch enable': 'p4thw4y',
@@ -289,13 +291,6 @@ class CiscoAutoProvision:
                 Required('debug print', default=0): All(Coerce(int),
                                                         Range(min=0, max=1)),
                 Required('default rwcommunity'): Coerce(str),
-                'elk': All(dict, Schema({
-                    'extra': list,
-                    'index': All(Coerce(str), Length(min=1)),
-                    'port': All(int, Range(min=1, max=65535)),
-                    'target': Coerce(str),
-                    'timeperiod': All(Coerce(int), Range(min=1)),
-                })),
                 Required('ignore list', default='ignore.txt'): Coerce(str),
                 # IsDir() won't check the base directory,
                 # IsFile() will return an error if the file doesn't exist.
@@ -308,6 +303,23 @@ class CiscoAutoProvision:
                 Required('rsa pass size', default=32): All(
                     Coerce(int),
                     Range(min=8, max=255)),
+                'search': All(dict, Schema({
+                    'extra': list,
+                    'index': All(Coerce(str), Length(min=1)),
+                    'method': Coerce(str),
+                    'plugin': All(
+                        dict,
+                        Schema(
+                            {
+                                'name': Coerce(str),
+                                Required('args', default=()): Any(list, tuple),
+                                Required('kwargs', default={}): dict
+                            },
+                            required=True)),
+                    'port': Any(None, All(int, Range(min=1, max=65535))),
+                    'target': Coerce(str),
+                    'timeperiod': All(Coerce(int), Range(min=1)),
+                })),
                 Required('switch enable'): Coerce(str),
                 Required('switch password'): Coerce(str),
                 Required('switch username'): Coerce(str),
@@ -325,7 +337,7 @@ class CiscoAutoProvision:
             #     'elk_stack',
             #     config['elk'].keys())(
             #     **config['elk'])
-            self.elk = config['elk']
+            self.elk = config['search']
             self.firmwares = config['target firmware']
             self.logfile = config['log file']
             self.logfile = 'autoprov.log'
@@ -351,7 +363,7 @@ class CiscoAutoProvision:
                 'An error occurred while parsing the config file: {}'.format(e)
             )
 
-    def search(self, target='http://localhost',
+    def search(self, target='http://localhost', method='GET', plugin=None,
                index='autoprovision', timeperiod=5, port=9200, extra=[]):
         r'''
         Search and parse logs from an ElasticSearch server.
@@ -401,7 +413,14 @@ class CiscoAutoProvision:
             'size': 10000
         }
         query['filter']['bool']['must'].extend(extra)
-        r = requests.get(url=url, data=json.dumps(query))
+        if plugin:
+            self.logger.debug('Loading plugin "%s"', plugin['name'])
+            requests = load_plugin(
+                plugin['name'])(
+                *plugin['args'],
+                **plugin['kwargs'])
+            self.logger.debug('Plugin was successfully loaded and initialized')
+        r = requests.request(method, url, data=json.dumps(query))
         r.raise_for_status()
         result_dict = r.json()
         hits = result_dict['hits']['hits']
