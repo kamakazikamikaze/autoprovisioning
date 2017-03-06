@@ -389,30 +389,28 @@ class CiscoAutoProvision:
         term = 'Native VLAN mismatch*'
         query = {
             'query': {
-                'filtered': {
-                    'query': {
-                        'query_string': {
-                            'query': term,
-                            'analyze_wildcard': 'true'
-                        }
-                    }
-                },
-            },
-            'filter': {
                 'bool': {
-                    'must': [{
-                        'range': {
-                            '@timestamp': {
-                                'gte': 'now-' + str(timeperiod) + 'm',
-                                'lte': 'now'
+                    'must': [
+                        {
+                            'query_string': {
+                                'query': term,
+                                'analyze_wildcard': 'true'
+                            }
+                        },
+                        {
+                            'range': {
+                                '@timestamp': {
+                                    'gte': 'now-' + str(timeperiod) + 'm',
+                                    'lte': 'now'
+                                }
                             }
                         }
-                    }],
+                    ],
                 }
             },
             'size': 10000
         }
-        query['filter']['bool']['must'].extend(extra)
+        query['query']['bool']['must'].extend(extra)
         if plugin:
             self.logger.debug('Loading plugin "%s"', plugin['name'])
             requests = load_plugin(
